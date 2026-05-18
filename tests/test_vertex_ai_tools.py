@@ -509,3 +509,85 @@ async def test_image_to_video_success(tmp_path):
     )
     assert result["success"] is True
     assert result["path"] == out
+
+
+# ---- extend_video ------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_extend_video_rejects_missing_video(tmp_path):
+    result = await vertex_ai_tools.extend_video(
+        video_path="/nonexistent/video.mp4",
+        output_path=str(tmp_path / "out.mp4"),
+    )
+    assert result["success"] is False
+    assert "not found" in result["error"]["message"].lower()
+
+@pytest.mark.asyncio
+async def test_extend_video_success(tmp_path):
+    vid = tmp_path / "input.mp4"
+    vid.write_text("fake video data")
+    out = str(tmp_path / "extended.mp4")
+    result = await vertex_ai_tools.extend_video(
+        video_path=str(vid),
+        output_path=out,
+        prompt="continue slowly",
+        extra_seconds=6,
+    )
+    assert result["success"] is True
+    assert result["extra_seconds"] == 6
+
+
+# ---- video_object_edit -------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_video_object_edit_rejects_invalid_operation(tmp_path):
+    vid = tmp_path / "v.mp4"
+    vid.write_text("data")
+    result = await vertex_ai_tools.video_object_edit(
+        video_path=str(vid),
+        operation="replace",
+        prompt="replace car with bike",
+        output_path=str(tmp_path / "out.mp4"),
+    )
+    assert result["success"] is False
+    assert "operation" in result["error"]["message"].lower()
+
+@pytest.mark.asyncio
+async def test_video_object_edit_insert_success(tmp_path):
+    vid = tmp_path / "v.mp4"
+    vid.write_text("data")
+    out = str(tmp_path / "out.mp4")
+    result = await vertex_ai_tools.video_object_edit(
+        video_path=str(vid),
+        operation="insert",
+        prompt="add a red balloon",
+        output_path=out,
+    )
+    assert result["success"] is True
+    assert result["operation"] == "insert"
+
+
+# ---- upload_file -------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_upload_file_rejects_missing_file():
+    result = await vertex_ai_tools.upload_file(file_path="/nonexistent/image.png")
+    assert result["success"] is False
+    assert "not found" in result["error"]["message"].lower()
+
+@pytest.mark.asyncio
+async def test_upload_file_returns_metadata(tmp_path):
+    f = tmp_path / "test.png"
+    f.write_bytes(b"\x89PNG\r\n")
+    result = await vertex_ai_tools.upload_file(file_path=str(f))
+    assert result["success"] is True
+    assert result["file_uri"].startswith("file://") or result["file_uri"].startswith("/") or (len(result["file_uri"]) > 1 and result["file_uri"][1] == ":")
+    assert result["size_bytes"] == 6
+    assert result["mime_type"] == "image/png"
+
+@pytest.mark.asyncio
+async def test_upload_file_autodetects_jpeg_mime(tmp_path):
+    f = tmp_path / "photo.jpg"
+    f.write_bytes(b"\xff\xd8\xff")
+    result = await vertex_ai_tools.upload_file(file_path=str(f))
+    assert result["mime_type"] == "image/jpeg"

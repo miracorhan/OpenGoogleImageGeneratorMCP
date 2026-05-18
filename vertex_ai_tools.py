@@ -1032,3 +1032,109 @@ async def image_to_video(
         }
     except Exception as e:
         return {"success": False, "error": _build_unexpected_error(model_name, ":predictLongRunning", e, time.time() - t0)}
+
+
+async def extend_video(
+    video_path: str,
+    output_path: str,
+    prompt: str = "",
+    extra_seconds: int = 4,
+    model_name: str = "veo-3.1-fast-generate-001",
+) -> Dict[str, Any]:
+    """Extend an existing video by extra_seconds seconds.
+
+    Stub — real Veo video-extension SDK integration pending.
+    """
+    t0 = time.time()
+    logger.info(f"[extend_video] START | model={model_name} | video={video_path} | extra={extra_seconds}s")
+
+    if not os.path.exists(video_path):
+        return {"success": False, "error": _build_validation_error(f"Video not found: {video_path}")}
+    if extra_seconds not in (4, 6, 8):
+        return {"success": False, "error": _build_validation_error(
+            f"extra_seconds must be 4, 6, or 8. Got: {extra_seconds}"
+        )}
+
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        with open(output_path, "w") as f:
+            f.write(f"Simulated extended video | source={video_path} | extra={extra_seconds}s | prompt={prompt}")
+        logger.info(f"[extend_video] Placeholder written to {output_path} in {time.time()-t0:.1f}s")
+        return {
+            "success": True,
+            "path": output_path,
+            "extra_seconds": extra_seconds,
+            "note": "Placeholder stub — real Veo extend SDK integration pending.",
+        }
+    except Exception as e:
+        return {"success": False, "error": _build_unexpected_error(model_name, ":predictLongRunning", e, time.time() - t0)}
+
+
+async def video_object_edit(
+    video_path: str,
+    operation: str,
+    prompt: str,
+    output_path: str,
+    model_name: str = "veo-3.1-fast-generate-001",
+) -> Dict[str, Any]:
+    """Insert or remove an object in a video.
+
+    operation: 'insert' | 'remove'
+    Stub — real Veo object-edit SDK integration pending.
+    """
+    t0 = time.time()
+    logger.info(f"[video_object_edit] START | op={operation} | model={model_name} | video={video_path}")
+
+    if operation not in ("insert", "remove"):
+        return {"success": False, "error": _build_validation_error(
+            f"operation must be 'insert' or 'remove'. Got: {operation!r}"
+        )}
+    if not os.path.exists(video_path):
+        return {"success": False, "error": _build_validation_error(f"Video not found: {video_path}")}
+
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        with open(output_path, "w") as f:
+            f.write(f"Simulated video object edit | op={operation} | prompt={prompt}")
+        logger.info(f"[video_object_edit] Placeholder written to {output_path} in {time.time()-t0:.1f}s")
+        return {
+            "success": True,
+            "path": output_path,
+            "operation": operation,
+            "note": "Placeholder stub — real Veo object-edit SDK integration pending.",
+        }
+    except Exception as e:
+        return {"success": False, "error": _build_unexpected_error(model_name, ":predictLongRunning", e, time.time() - t0)}
+
+
+async def upload_file(
+    file_path: str,
+    mime_type: Optional[str] = None,
+    display_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Register a local file as a reusable reference for other tool calls.
+
+    Returns a file_uri that can be passed to transform_image as additional_image_paths.
+    Local-reference implementation — for GCS upload, set storage_uri in generate_image instead.
+    """
+    t0 = time.time()
+    logger.info(f"[upload_file] START | path={file_path}")
+
+    if not os.path.exists(file_path):
+        return {"success": False, "error": _build_validation_error(f"File not found: {file_path}")}
+
+    abs_path = os.path.abspath(file_path)
+    size_bytes = os.path.getsize(abs_path)
+    detected_mime = mime_type or _mime_for_path(abs_path)
+    name = display_name or os.path.basename(abs_path)
+    file_uri = abs_path  # Local reference; use as additional_image_paths value
+
+    logger.info(f"[upload_file] SUCCESS in {time.time()-t0:.1f}s | size={size_bytes} | mime={detected_mime}")
+    return {
+        "success": True,
+        "file_uri": file_uri,
+        "name": name,
+        "mime_type": detected_mime,
+        "size_bytes": size_bytes,
+        "note": "Local file reference. Pass file_uri as additional_image_paths in tool_transform_image.",
+    }

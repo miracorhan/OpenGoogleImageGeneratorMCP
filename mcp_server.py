@@ -15,6 +15,7 @@ import vertexai
 from vertex_ai_tools import (
     generate_image, edit_image, transform_image, analyze_image,
     upscale_image, remove_background, generate_video, image_to_video,
+    extend_video, video_object_edit, upload_file,
     gemini_generate_image,
     probe_available_models, get_cached_availability,
     _validate_output_path,
@@ -436,6 +437,96 @@ async def tool_image_to_video(params: ImageToVideoParams) -> dict:
         duration=params.duration,
         aspect_ratio=params.aspect_ratio,
     )
+
+class ExtendVideoParams(BaseModel):
+    video_path: str = Field(..., description="Absolute path to the source video to extend.")
+    output_filename: Optional[str] = Field(None, description="Output filename. Required if output_path not given.")
+    output_path: Optional[str] = Field(None, description="Absolute output file path.")
+    prompt: str = Field("", description="Optional motion description to guide the extension.")
+    extra_seconds: Literal[4, 6, 8] = Field(4, description="Seconds to add: 4, 6, or 8.")
+    model_name: str = Field("veo-3.1-fast-generate-001", description="Veo model to use.")
+    model_tier: Optional[Literal["fast", "quality"]] = Field(None, description="fast / quality. Overrides model_name.")
+
+@mcp.tool()
+async def tool_extend_video(params: ExtendVideoParams) -> dict:
+    """Extend an existing video by generating additional seconds at the end."""
+    from model_registry import resolve_model
+
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
+
+    resolved_model = params.model_name
+    if params.model_tier:
+        resolved_model, _ = resolve_model(params.model_tier, "video")
+
+    return await extend_video(
+        video_path=params.video_path,
+        output_path=final_path,
+        prompt=params.prompt,
+        extra_seconds=params.extra_seconds,
+        model_name=resolved_model,
+    )
+
+
+class VideoObjectEditParams(BaseModel):
+    video_path: str = Field(..., description="Absolute path to the source video.")
+    operation: Literal["insert", "remove"] = Field(..., description="'insert' to add an object, 'remove' to delete one.")
+    prompt: str = Field(..., description="Description of the object to insert or remove.")
+    output_filename: Optional[str] = Field(None, description="Output filename. Required if output_path not given.")
+    output_path: Optional[str] = Field(None, description="Absolute output file path.")
+    model_name: str = Field("veo-3.1-fast-generate-001", description="Veo model to use.")
+    model_tier: Optional[Literal["fast", "quality"]] = Field(None, description="fast / quality. Overrides model_name.")
+
+@mcp.tool()
+async def tool_video_object_edit(params: VideoObjectEditParams) -> dict:
+    """Insert or remove an object in a video using Veo."""
+    from model_registry import resolve_model
+
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
+
+    resolved_model = params.model_name
+    if params.model_tier:
+        resolved_model, _ = resolve_model(params.model_tier, "video")
+
+    return await video_object_edit(
+        video_path=params.video_path,
+        operation=params.operation,
+        prompt=params.prompt,
+        output_path=final_path,
+        model_name=resolved_model,
+    )
+
+
+class UploadFileParams(BaseModel):
+    file_path: str = Field(..., description="Absolute path to the local file to register.")
+    mime_type: Optional[str] = Field(None, description="MIME type (auto-detected from extension if omitted).")
+    display_name: Optional[str] = Field(None, description="Human-readable name for this file reference.")
+
+@mcp.tool()
+async def tool_upload_file(params: UploadFileParams) -> dict:
+    """Register a local file for use as a reference image in other tools (e.g. tool_transform_image).
+    Returns a file_uri to pass as additional_image_paths."""
+    return await upload_file(
+        file_path=params.file_path,
+        mime_type=params.mime_type,
+        display_name=params.display_name,
+    )
+
 
 @mcp.resource("local://outputs/{filename}")
 def get_generated_image(filename: str) -> bytes:
