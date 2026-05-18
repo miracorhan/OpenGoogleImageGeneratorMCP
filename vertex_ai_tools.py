@@ -538,7 +538,8 @@ async def generate_image(
             "safetySetting": safety_setting,
             "personGeneration": person_generation,
             "outputOptions": {
-                "mimeType": f"image/{output_format.lower()}",
+                "mimeType": "image/png" if output_format.upper() in ("WEBP", "AVIF")
+                             else f"image/{output_format.lower()}",
                 "compressionQuality": compression_quality,
             },
         }
@@ -573,8 +574,16 @@ async def generate_image(
                 if number_of_images > 1:
                     base, ext = os.path.splitext(output_path)
                     current_out = f"{base}_{i}{ext}"
-                _save_image_bytes(image_bytes, current_out)
-                res["path"] = current_out
+                if output_format.upper() in ("WEBP", "AVIF"):
+                    from format_converter import save_with_format
+                    final_path, mime = save_with_format(
+                        image_bytes, current_out, output_format.lower()
+                    )
+                    res["path"] = final_path
+                    res["mime_type"] = mime
+                else:
+                    _save_image_bytes(image_bytes, current_out)
+                    res["path"] = current_out
             results.append(res)
         logger.info(f"[generate_image] SUCCESS in {time.time()-t0:.1f}s")
         return {"success": True, "results": results}
@@ -592,6 +601,7 @@ async def gemini_generate_image(
     output_path: Optional[str] = None,
     model_name: str = "gemini-2.5-flash-image",
     return_base64: bool = False,
+    save_format: str = "png",
 ) -> Dict[str, Any]:
     """Text-to-image generation via Gemini multimodal models (no input image required).
     Used when model_tier='balanced' or a gemini-*-image model is specified directly.
@@ -623,8 +633,14 @@ async def gemini_generate_image(
             res["base64"] = _encode_base64(image_bytes)
             res["mime_type"] = "image/png"
         if output_path:
-            _save_image_bytes(image_bytes, output_path)
-            res["path"] = output_path
+            if save_format != "png":
+                from format_converter import save_with_format
+                final_path, mime = save_with_format(image_bytes, output_path, save_format)
+                res["path"] = final_path
+                res["mime_type"] = mime
+            else:
+                _save_image_bytes(image_bytes, output_path)
+                res["path"] = output_path
 
         logger.info(f"[gemini_generate_image] SUCCESS in {time.time()-t0:.1f}s")
         return {"success": True, "results": [res]}
@@ -647,6 +663,7 @@ async def edit_image(
     negative_prompt: Optional[str] = None,
     sample_count: int = 1,
     return_base64: bool = False,
+    save_format: str = "png",
 ) -> Dict[str, Any]:
     """Precision image editing via Imagen 3 Capability.
 
@@ -744,8 +761,14 @@ async def edit_image(
                 if len(images) > 1:
                     base, ext = os.path.splitext(output_path)
                     current_out = f"{base}_{i}{ext}"
-                _save_image_bytes(image_bytes, current_out)
-                res["path"] = current_out
+                if save_format != "png":
+                    from format_converter import save_with_format
+                    final_path, mime = save_with_format(image_bytes, current_out, save_format)
+                    res["path"] = final_path
+                    res["mime_type"] = mime
+                else:
+                    _save_image_bytes(image_bytes, current_out)
+                    res["path"] = current_out
             results.append(res)
         logger.info(f"[edit_image] SUCCESS in {time.time()-t0:.1f}s (n={len(images)})")
         return {"success": True, "results": results}
@@ -765,6 +788,7 @@ async def transform_image(
     additional_image_paths: Optional[List[str]] = None,
     model_name: str = "gemini-2.5-flash-image",
     return_base64: bool = False,
+    save_format: str = "png",
 ) -> Dict[str, Any]:
     """Free-form natural-language image transformation via Gemini multimodal models.
 
@@ -825,8 +849,14 @@ async def transform_image(
             res["base64"] = _encode_base64(image_bytes)
             res["mime_type"] = "image/png"
         if output_path:
-            _save_image_bytes(image_bytes, output_path)
-            res["path"] = output_path
+            if save_format != "png":
+                from format_converter import save_with_format
+                final_path, mime = save_with_format(image_bytes, output_path, save_format)
+                res["path"] = final_path
+                res["mime_type"] = mime
+            else:
+                _save_image_bytes(image_bytes, output_path)
+                res["path"] = output_path
         logger.info(f"[transform_image] SUCCESS in {time.time()-t0:.1f}s")
         return {"success": True, "results": [res]}
 
@@ -881,6 +911,7 @@ async def upscale_image(
     output_path: Optional[str] = None,
     model_name: str = "imagen-3.0-generate-002",
     return_base64: bool = False,
+    save_format: str = "png",
 ) -> Dict[str, Any]:
     t0 = time.time()
     logger.info(f"[upscale_image] START | model={model_name} | base={base_image_path}")
@@ -911,8 +942,14 @@ async def upscale_image(
             res["base64"] = _encode_base64(image_bytes)
             res["mime_type"] = "image/png"
         if output_path:
-            _save_image_bytes(image_bytes, output_path)
-            res["path"] = output_path
+            if save_format != "png":
+                from format_converter import save_with_format
+                final_path, mime = save_with_format(image_bytes, output_path, save_format)
+                res["path"] = final_path
+                res["mime_type"] = mime
+            else:
+                _save_image_bytes(image_bytes, output_path)
+                res["path"] = output_path
         logger.info(f"[upscale_image] SUCCESS in {time.time()-t0:.1f}s")
         return {"success": True, "results": [res]}
 

@@ -672,3 +672,32 @@ async def test_generate_music_success(tmp_path):
     assert result["success"] is True
     assert result["path"] == out
     assert result["duration"] == 30
+
+
+# ---- save_format (format conversion in gemini_generate_image) ----------
+
+@pytest.mark.asyncio
+@patch("vertex_ai_tools._gemini_generate_content")
+async def test_gemini_generate_image_webp_output(mock_generate, tmp_path):
+    from io import BytesIO
+    from PIL import Image
+    img = Image.new("RGB", (4, 4), color=(10, 20, 30))
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    png_bytes = buf.getvalue()
+    b64 = base64.b64encode(png_bytes).decode()
+
+    mock_generate.return_value = {
+        "candidates": [{
+            "content": {
+                "parts": [{"inlineData": {"mimeType": "image/png", "data": b64}}]
+            }
+        }]
+    }
+
+    out = str(tmp_path / "img.png")
+    result = await vertex_ai_tools.gemini_generate_image(
+        prompt="a cat", output_path=out, save_format="webp"
+    )
+    assert result["success"] is True
+    assert result["results"][0]["path"].endswith(".webp")
