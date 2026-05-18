@@ -3,7 +3,7 @@
 
 import asyncio
 import os
-from typing import Optional, List
+from typing import Literal, Optional, List
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
@@ -14,10 +14,15 @@ from google.auth.impersonated_credentials import Credentials as ImpersonatedCred
 import vertexai
 from vertex_ai_tools import (
     generate_image, edit_image, transform_image, analyze_image,
-    upscale_image, remove_background, generate_video,
+    upscale_image, remove_background, generate_video, image_to_video,
+    extend_video, video_object_edit, upload_file,
+    batch_generate, generate_music,
+    gemini_generate_image,
     probe_available_models, get_cached_availability,
+    _validate_output_path,
     SUPPORTED_EDIT_MODES,
 )
+from pipeline import run_pipeline
 from config import PROJECT_ID, LOCATION, DEFAULT_OUTPUT_DIR, GOOGLE_ACCESS_TOKEN, IMPERSONATE_SERVICE_ACCOUNT, logger, check_for_updates, __version__
 from discovery import get_recommended_models
 
@@ -76,39 +81,81 @@ async def tool_list_available_models(force_refresh: bool = False) -> dict:
 
 class GenerateImageParams(BaseModel):
     prompt: str = Field(..., description="The text description of the image to generate.")
-    output_filename: str = Field(..., description="The name of the file to save the image as (e.g. image.png).")
+    output_filename: Optional[str] = Field(None, description="Filename to save the image as (e.g. image.png). Required if output_path not given.")
+    output_path: Optional[str] = Field(None, description="Absolute path for the output file (e.g. C:/outputs/image.png). Takes priority over output_filename.")
     model_name: str = Field(
         "imagen-4.0-fast-generate-001",
-        description=(
-            "Image generation model to use. "
-            "GA: imagen-4.0-fast-generate-001 (fast/cheap, default), "
-            "imagen-4.0-generate-001 (higher quality), "
-            "imagen-3.0-generate-002 (stable fallback)."
-        ),
+        description="Imagen model. GA: imagen-4.0-fast-generate-001 (fast, default), imagen-4.0-generate-001 (quality), imagen-4.0-ultra-generate-001 (ultra), imagen-3.0-generate-002 (stable).",
     )
+    model_tier: Optional[Literal["fast", "balanced", "quality", "ultra"]] = Field(None, description="Shorthand tier: fast / balanced / quality / ultra. Overrides model_name when set. balanced routes to gemini-2.5-flash-image.")
     number_of_images: int = Field(1, ge=1, le=4, description="Number of images to generate.")
     aspect_ratio: str = Field("1:1", description="Aspect ratio (e.g., 1:1, 16:9, 4:3, 9:16).")
     return_base64: bool = Field(False, description="Whether to return the base64 encoded image.")
+    negative_prompt: Optional[str] = Field(None, description="Elements to exclude from the image.")
+    seed: Optional[int] = Field(None, description="Seed for deterministic output. Requires add_watermark=False.")
+    enhance_prompt: bool = Field(True, description="Use LLM-based prompt rewriting for better results.")
+    add_watermark: bool = Field(True, description="Add SynthID digital watermark. Must be False when seed is set.")
+    safety_setting: Literal["block_low_and_above", "block_medium_and_above", "block_only_high"] = Field("block_medium_and_above", description="Safety filter level.")
+    person_generation: Literal["allow_all", "allow_adult", "dont_allow"] = Field("allow_adult", description="Person generation policy.")
+    output_format: Literal["PNG", "JPEG"] = Field("PNG", description="Output format.")
+    compression_quality: int = Field(85, ge=0, le=100, description="JPEG compression quality (0-100). Only applies when output_format=JPEG.")
+    storage_uri: Optional[str] = Field(None, description="Cloud Storage destination (e.g. gs://bucket/path/). Image is written directly to GCS.")
 
 @mcp.tool()
 async def tool_generate_image(params: GenerateImageParams) -> dict:
     """
-    Generate an image from a text prompt using Vertex AI.
+    Generate an image from a text prompt using Vertex AI Imagen or Gemini.
+    Use model_tier for simple model selection: fast/balanced/quality/ultra.
+    balanced routes to gemini-2.5-flash-image (Gemini API path).
     """
-    output_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    from model_registry import resolve_model
+
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
+
+    resolved_model = params.model_name
+    api_backend = "imagen"
+    if params.model_tier:
+        resolved_model, api_backend = resolve_model(params.model_tier, "generate")
+
+    if api_backend == "gemini":
+        return await gemini_generate_image(
+            prompt=params.prompt,
+            output_path=final_path,
+            model_name=resolved_model,
+            return_base64=params.return_base64,
+        )
+
     return await generate_image(
         prompt=params.prompt,
-        output_path=output_path,
-        model_name=params.model_name,
+        output_path=final_path,
+        model_name=resolved_model,
         number_of_images=params.number_of_images,
         aspect_ratio=params.aspect_ratio,
-        return_base64=params.return_base64
+        return_base64=params.return_base64,
+        negative_prompt=params.negative_prompt,
+        seed=params.seed,
+        enhance_prompt=params.enhance_prompt,
+        add_watermark=params.add_watermark,
+        safety_setting=params.safety_setting,
+        person_generation=params.person_generation,
+        output_format=params.output_format,
+        compression_quality=params.compression_quality,
+        storage_uri=params.storage_uri,
     )
 
 class EditImageParams(BaseModel):
     prompt: str = Field(..., description="Text description of the edits to apply.")
     base_image_path: str = Field(..., description="Absolute or relative path to the source image.")
-    output_filename: str = Field(..., description="Name of the file to save the edited image as.")
+    output_filename: Optional[str] = Field(None, description="Name of the file to save the edited image as.")
+    output_path: Optional[str] = Field(None, description="Absolute path for the output file. Takes priority over output_filename.")
     mask_image_path: Optional[str] = Field(
         None,
         description=(
@@ -144,11 +191,20 @@ async def tool_edit_image(params: EditImageParams) -> dict:
     For free-form natural-language transforms (style transfer, scene rewriting),
     use tool_transform_image instead.
     """
-    output_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
+
     return await edit_image(
         prompt=params.prompt,
         base_image_path=params.base_image_path,
-        output_path=output_path,
+        output_path=final_path,
         mask_image_path=params.mask_image_path,
         edit_mode=params.edit_mode,
         model_name=params.model_name,
@@ -161,7 +217,9 @@ async def tool_edit_image(params: EditImageParams) -> dict:
 class TransformImageParams(BaseModel):
     prompt: str = Field(..., description="Natural-language transformation instruction.")
     base_image_path: str = Field(..., description="Path to the primary input image.")
-    output_filename: str = Field(..., description="Name of the file to save the transformed image as.")
+    output_filename: Optional[str] = Field(None, description="Name of the file to save the transformed image as.")
+    output_path: Optional[str] = Field(None, description="Absolute path for the output file. Takes priority over output_filename.")
+    model_tier: Optional[Literal["fast", "balanced", "quality", "ultra"]] = Field(None, description="Shorthand tier: fast / balanced / quality / ultra. Overrides model_name. fast/balanced → gemini-2.5-flash-image, quality/ultra → gemini-2.5-pro-image.")
     additional_image_paths: Optional[List[str]] = Field(
         None,
         description="Optional list of additional reference image paths (e.g. style refs).",
@@ -183,13 +241,28 @@ async def tool_transform_image(params: TransformImageParams) -> dict:
     Use for style transfer, scene rewriting, or any natural-language image edit
     that does not require pixel-precise masking.
     """
-    output_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    from model_registry import resolve_model
+
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
+
+    resolved_model = params.model_name
+    if params.model_tier:
+        resolved_model, _ = resolve_model(params.model_tier, "transform")
+
     return await transform_image(
         prompt=params.prompt,
         base_image_path=params.base_image_path,
-        output_path=output_path,
+        output_path=final_path,
         additional_image_paths=params.additional_image_paths,
-        model_name=params.model_name,
+        model_name=resolved_model,
         return_base64=params.return_base64,
     )
 
@@ -221,7 +294,8 @@ async def tool_analyze_image(params: AnalyzeImageParams) -> dict:
 
 class UpscaleImageParams(BaseModel):
     base_image_path: str = Field(..., description="The path to the image to upscale.")
-    output_filename: str = Field(..., description="The name of the file to save the upscaled image as.")
+    output_filename: Optional[str] = Field(None, description="The name of the file to save the upscaled image as.")
+    output_path: Optional[str] = Field(None, description="Absolute path for the output file. Takes priority over output_filename.")
     model_name: str = Field(
         "imagen-3.0-generate-002",
         description="Model to use. GA: imagen-3.0-generate-002 (default). Other Imagen variants supported.",
@@ -233,20 +307,30 @@ async def tool_upscale_image(params: UpscaleImageParams) -> dict:
     """
     Upscale a low resolution image.
     """
-    output_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
+
     return await upscale_image(
         base_image_path=params.base_image_path,
-        output_path=output_path,
+        output_path=final_path,
         model_name=params.model_name,
         return_base64=params.return_base64
     )
 
 class RemoveBackgroundParams(BaseModel):
     base_image_path: str = Field(..., description="The path to the image to process.")
-    output_filename: str = Field(..., description="The name of the file to save the background-removed image as.")
+    output_filename: Optional[str] = Field(None, description="The name of the file to save the background-removed image as.")
+    output_path: Optional[str] = Field(None, description="Absolute path for the output file. Takes priority over output_filename.")
     model_name: str = Field(
-        "imagen-3.0-generate-002",
-        description="Model to use. GA: imagen-3.0-generate-002 (default). Other Imagen variants supported.",
+        "imagen-3.0-capability-001",
+        description="Model to use. imagen-3.0-capability-001 (default, required for BGSWAP). Do not use imagen-3.0-generate-002 for background removal.",
     )
     return_base64: bool = Field(False, description="Whether to return the base64 encoded image.")
 
@@ -255,37 +339,282 @@ async def tool_remove_background(params: RemoveBackgroundParams) -> dict:
     """
     Remove background from an image.
     """
-    output_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
+
     return await remove_background(
         base_image_path=params.base_image_path,
-        output_path=output_path,
+        output_path=final_path,
         model_name=params.model_name,
         return_base64=params.return_base64
     )
 
 class GenerateVideoParams(BaseModel):
     prompt: str = Field(..., description="The text description of the video to generate.")
-    output_filename: str = Field(..., description="The name of the file to save the video as (e.g. video.mp4).")
+    output_filename: Optional[str] = Field(None, description="Output filename (e.g. video.mp4). Required if output_path not given.")
+    output_path: Optional[str] = Field(None, description="Absolute output file path. Takes priority over output_filename.")
     model_name: str = Field(
         "veo-3.1-fast-generate-001",
-        description=(
-            "Video generation model. "
-            "Stable: veo-3.1-fast-generate-001 (default, low latency), "
-            "veo-3.1-generate-001 (premium), veo-3.0-generate-001, veo-2.0-generate-001."
-        ),
+        description="Veo model. GA: veo-3.1-fast-generate-001 (default, low latency), veo-3.1-generate-001 (premium).",
     )
+    model_tier: Optional[Literal["fast", "quality"]] = Field(None, description="fast / quality. Overrides model_name.")
+    duration: Literal[4, 6, 8] = Field(4, description="Video duration in seconds.")
+    resolution: Literal["720p", "1080p", "4k"] = Field("1080p", description="Output resolution.")
+    aspect_ratio: Literal["16:9", "9:16"] = Field("16:9", description="Aspect ratio: 16:9 (landscape) or 9:16 (portrait).")
+    audio_enabled: bool = Field(False, description="Enable audio generation (Veo 3+ only).")
 
 @mcp.tool()
 async def tool_generate_video(params: GenerateVideoParams) -> dict:
-    """
-    Generate a video from a text prompt.
-    """
-    output_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    """Generate a video from a text prompt using Veo."""
+    from model_registry import resolve_model
+
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
+
+    resolved_model = params.model_name
+    if params.model_tier:
+        resolved_model, _ = resolve_model(params.model_tier, "video")
+
     return await generate_video(
         prompt=params.prompt,
-        output_path=output_path,
-        model_name=params.model_name
+        output_path=final_path,
+        model_name=resolved_model,
+        duration=params.duration,
+        resolution=params.resolution,
+        aspect_ratio=params.aspect_ratio,
+        audio_enabled=params.audio_enabled,
     )
+
+
+class ImageToVideoParams(BaseModel):
+    first_frame_path: str = Field(..., description="Absolute path to the image used as the first video frame.")
+    prompt: str = Field("", description="Motion or scene description to guide video generation.")
+    output_filename: Optional[str] = Field(None, description="Output filename (e.g. video.mp4). Required if output_path not given.")
+    output_path: Optional[str] = Field(None, description="Absolute output file path. Takes priority over output_filename.")
+    last_frame_path: Optional[str] = Field(None, description="Optional image for the last frame (first+last frame mode).")
+    model_name: str = Field("veo-3.1-fast-generate-001", description="Veo model to use.")
+    model_tier: Optional[Literal["fast", "quality"]] = Field(None, description="fast / quality. Overrides model_name.")
+    duration: Literal[4, 6, 8] = Field(4, description="Video duration in seconds.")
+    aspect_ratio: Literal["16:9", "9:16"] = Field("16:9", description="Aspect ratio: 16:9 or 9:16.")
+
+@mcp.tool()
+async def tool_image_to_video(params: ImageToVideoParams) -> dict:
+    """Generate a video from a still image as the first frame using Veo."""
+    from model_registry import resolve_model
+
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
+
+    resolved_model = params.model_name
+    if params.model_tier:
+        resolved_model, _ = resolve_model(params.model_tier, "video")
+
+    return await image_to_video(
+        first_frame_path=params.first_frame_path,
+        output_path=final_path,
+        prompt=params.prompt,
+        last_frame_path=params.last_frame_path,
+        model_name=resolved_model,
+        duration=params.duration,
+        aspect_ratio=params.aspect_ratio,
+    )
+
+class ExtendVideoParams(BaseModel):
+    video_path: str = Field(..., description="Absolute path to the source video to extend.")
+    output_filename: Optional[str] = Field(None, description="Output filename. Required if output_path not given.")
+    output_path: Optional[str] = Field(None, description="Absolute output file path.")
+    prompt: str = Field("", description="Optional motion description to guide the extension.")
+    extra_seconds: Literal[4, 6, 8] = Field(4, description="Seconds to add: 4, 6, or 8.")
+    model_name: str = Field("veo-3.1-fast-generate-001", description="Veo model to use.")
+    model_tier: Optional[Literal["fast", "quality"]] = Field(None, description="fast / quality. Overrides model_name.")
+
+@mcp.tool()
+async def tool_extend_video(params: ExtendVideoParams) -> dict:
+    """Extend an existing video by generating additional seconds at the end."""
+    from model_registry import resolve_model
+
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
+
+    resolved_model = params.model_name
+    if params.model_tier:
+        resolved_model, _ = resolve_model(params.model_tier, "video")
+
+    return await extend_video(
+        video_path=params.video_path,
+        output_path=final_path,
+        prompt=params.prompt,
+        extra_seconds=params.extra_seconds,
+        model_name=resolved_model,
+    )
+
+
+class VideoObjectEditParams(BaseModel):
+    video_path: str = Field(..., description="Absolute path to the source video.")
+    operation: Literal["insert", "remove"] = Field(..., description="'insert' to add an object, 'remove' to delete one.")
+    prompt: str = Field(..., description="Description of the object to insert or remove.")
+    output_filename: Optional[str] = Field(None, description="Output filename. Required if output_path not given.")
+    output_path: Optional[str] = Field(None, description="Absolute output file path.")
+    model_name: str = Field("veo-3.1-fast-generate-001", description="Veo model to use.")
+    model_tier: Optional[Literal["fast", "quality"]] = Field(None, description="fast / quality. Overrides model_name.")
+
+@mcp.tool()
+async def tool_video_object_edit(params: VideoObjectEditParams) -> dict:
+    """Insert or remove an object in a video using Veo."""
+    from model_registry import resolve_model
+
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
+
+    resolved_model = params.model_name
+    if params.model_tier:
+        resolved_model, _ = resolve_model(params.model_tier, "video")
+
+    return await video_object_edit(
+        video_path=params.video_path,
+        operation=params.operation,
+        prompt=params.prompt,
+        output_path=final_path,
+        model_name=resolved_model,
+    )
+
+
+class UploadFileParams(BaseModel):
+    file_path: str = Field(..., description="Absolute path to the local file to register.")
+    mime_type: Optional[str] = Field(None, description="MIME type (auto-detected from extension if omitted).")
+    display_name: Optional[str] = Field(None, description="Human-readable name for this file reference.")
+
+@mcp.tool()
+async def tool_upload_file(params: UploadFileParams) -> dict:
+    """Register a local file for use as a reference image in other tools (e.g. tool_transform_image).
+    Returns a file_uri to pass as additional_image_paths."""
+    return await upload_file(
+        file_path=params.file_path,
+        mime_type=params.mime_type,
+        display_name=params.display_name,
+    )
+
+
+class BatchGenerateParams(BaseModel):
+    prompts: List[str] = Field(..., description="List of text prompts (max 10).")
+    output_prefix: str = Field(..., description="Filename prefix. Files: <prefix>_0.png, <prefix>_1.png, ...")
+    output_dir: Optional[str] = Field(None, description="Absolute directory path for output. Defaults to DEFAULT_OUTPUT_DIR.")
+    model_name: str = Field("imagen-4.0-fast-generate-001", description="Imagen model to use for all prompts.")
+    model_tier: Optional[Literal["fast", "balanced", "quality", "ultra"]] = Field(None, description="fast / balanced / quality / ultra. Overrides model_name.")
+    aspect_ratio: str = Field("1:1", description="Aspect ratio for all generated images.")
+
+@mcp.tool()
+async def tool_batch_generate(params: BatchGenerateParams) -> dict:
+    """Generate images for multiple prompts in a single call (max 10, max 4 concurrent)."""
+    from model_registry import resolve_model
+
+    resolved_model = params.model_name
+    if params.model_tier:
+        resolved_model, _ = resolve_model(params.model_tier, "generate")
+
+    output_dir = params.output_dir or DEFAULT_OUTPUT_DIR
+
+    return await batch_generate(
+        prompts=params.prompts,
+        output_prefix=params.output_prefix,
+        output_dir=output_dir,
+        model_name=resolved_model,
+        aspect_ratio=params.aspect_ratio,
+    )
+
+
+class PipelineStepModel(BaseModel):
+    tool: str = Field(..., description="Tool name: generate / edit / transform / upscale / remove_background")
+    params: dict = Field(default_factory=dict, description="Parameters for this tool step (excluding output path, which is managed by the pipeline).")
+
+class RunPipelineParams(BaseModel):
+    steps: List[PipelineStepModel] = Field(..., description="Ordered list of pipeline steps.")
+    output_path: Optional[str] = Field(None, description="Absolute path for the final output image.")
+    output_filename: Optional[str] = Field(None, description="Output filename saved to DEFAULT_OUTPUT_DIR. Used if output_path not given.")
+
+@mcp.tool()
+async def tool_run_pipeline(params: RunPipelineParams) -> dict:
+    """Chain image processing steps sequentially. Each step's output becomes the next step's input.
+    Supported tools: generate, edit, transform, upscale, remove_background.
+    Example: generate → remove_background → upscale."""
+
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        final_path = None  # pipeline manages intermediates in temp dir
+
+    steps_dicts = [{"tool": s.tool, "params": s.params} for s in params.steps]
+    return await run_pipeline(steps=steps_dicts, output_path=final_path)
+
+
+class GenerateMusicParams(BaseModel):
+    prompt: str = Field(..., description="Text description of the music to generate.")
+    output_filename: Optional[str] = Field(None, description="Output filename (e.g. track.mp3). Required if output_path not given.")
+    output_path: Optional[str] = Field(None, description="Absolute output file path.")
+    model_name: Literal["lyria-2", "lyria-3"] = Field("lyria-2", description="Lyria model version.")
+    duration: Optional[int] = Field(None, description="Desired music duration in seconds (optional).")
+
+@mcp.tool()
+async def tool_generate_music(params: GenerateMusicParams) -> dict:
+    """Generate music from a text prompt using Lyria. Check tool_list_available_models to verify Lyria is enabled in your project."""
+
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
+
+    return await generate_music(
+        prompt=params.prompt,
+        output_path=final_path,
+        model_name=params.model_name,
+        duration=params.duration,
+    )
+
 
 @mcp.resource("local://outputs/{filename}")
 def get_generated_image(filename: str) -> bytes:

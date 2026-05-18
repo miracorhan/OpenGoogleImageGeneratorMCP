@@ -29,6 +29,7 @@ _DOCS_URL = "https://docs.cloud.google.com/gemini-enterprise-agent-platform/mode
 SUPPORTED_IMAGE_MODELS = (
     "imagen-4.0-fast-generate-001",
     "imagen-4.0-generate-001",
+    "imagen-4.0-ultra-generate-001",
     "imagen-3.0-generate-002",
     "imagen-3.0-capability-001",
 )
@@ -102,6 +103,15 @@ def _mime_for_path(path: str) -> str:
     if ext == ".webp":
         return "image/webp"
     return "image/jpeg"
+
+
+def _validate_output_path(path: str) -> str:
+    """Ensure output_path is absolute and contains no '..' components."""
+    if not os.path.isabs(path):
+        raise ValueError(f"output_path must be an absolute path. Got: {path!r}")
+    if ".." in path.replace("\\", "/").split("/"):
+        raise ValueError(f"output_path must not contain '..' components. Got: {path!r}")
+    return os.path.abspath(path)
 
 
 async def _to_thread(func, *args, timeout: float = API_TIMEOUT, **kwargs):
@@ -487,17 +497,48 @@ async def generate_image(
     number_of_images: int = 1,
     aspect_ratio: str = "1:1",
     return_base64: bool = False,
+    negative_prompt: Optional[str] = None,
+    seed: Optional[int] = None,
+    enhance_prompt: bool = True,
+    add_watermark: bool = True,
+    safety_setting: str = "block_medium_and_above",
+    person_generation: str = "allow_adult",
+    output_format: str = "PNG",
+    compression_quality: int = 85,
+    storage_uri: Optional[str] = None,
 ) -> Dict[str, Any]:
     t0 = time.time()
-    logger.info(f"[generate_image] START | model={model_name} | prompt='{prompt[:80]}...' | aspect={aspect_ratio} | n={number_of_images}")
+    logger.info(
+        f"[generate_image] START | model={model_name} | prompt='{prompt[:80]}' | "
+        f"aspect={aspect_ratio} | n={number_of_images}"
+    )
 
     if not _is_imagen_model(model_name):
         return {"success": False, "error": _build_validation_error(_unsupported_image_model_error(model_name))}
 
     try:
+        parameters: Dict[str, Any] = {
+            "sampleCount": number_of_images,
+            "aspectRatio": aspect_ratio,
+            "enhancePrompt": enhance_prompt,
+            "addWatermark": add_watermark,
+            "safetySetting": safety_setting,
+            "personGeneration": person_generation,
+            "outputOptions": {
+                "mimeType": f"image/{output_format.lower()}",
+                "compressionQuality": compression_quality,
+            },
+        }
+        if negative_prompt:
+            parameters["negativePrompt"] = negative_prompt
+        if seed is not None:
+            parameters["seed"] = seed
+        if storage_uri:
+            parameters["storageUri"] = storage_uri
+
         payload = {
             "instances": [{"prompt": prompt}],
-            "parameters": {"sampleCount": number_of_images, "aspectRatio": aspect_ratio},
+            "parameters": parameters,
         }
         response = await _to_thread(_imagen_predict, model_name, payload, timeout=API_TIMEOUT)
         images = _extract_image_bytes_list(response)
@@ -531,6 +572,56 @@ async def generate_image(
         return {"success": False, "error": _build_timeout_error(model_name, ":predict", time.time() - t0)}
     except Exception as e:
         return {"success": False, "error": _build_unexpected_error(model_name, ":predict", e, time.time() - t0)}
+
+
+async def gemini_generate_image(
+    prompt: str,
+    output_path: Optional[str] = None,
+    model_name: str = "gemini-2.5-flash-image",
+    return_base64: bool = False,
+) -> Dict[str, Any]:
+    """Text-to-image generation via Gemini multimodal models (no input image required).
+    Used when model_tier='balanced' or a gemini-*-image model is specified directly.
+    """
+    t0 = time.time()
+    logger.info(f"[gemini_generate_image] START | model={model_name} | prompt='{prompt[:80]}'")
+
+    try:
+        contents = [{"role": "user", "parts": [{"text": prompt}]}]
+        generation_config = {"responseModalities": ["IMAGE", "TEXT"]}
+
+        response = await _to_thread(
+            _gemini_generate_content, model_name, contents, generation_config, timeout=API_TIMEOUT
+        )
+        image_bytes = _extract_gemini_image_bytes(response)
+        if not image_bytes:
+            text_fallback = _extract_gemini_text(response)
+            err_msg = (
+                f"Model returned no image. Text: {text_fallback[:200]!r}"
+                if text_fallback else
+                f"Model returned no image. Response keys: {list(response.keys())}"
+            )
+            return {"success": False, "error": _build_unexpected_error(
+                model_name, ":generateContent", ValueError(err_msg), time.time() - t0
+            )}
+
+        res: Dict[str, Any] = {}
+        if return_base64:
+            res["base64"] = _encode_base64(image_bytes)
+            res["mime_type"] = "image/png"
+        if output_path:
+            _save_image_bytes(image_bytes, output_path)
+            res["path"] = output_path
+
+        logger.info(f"[gemini_generate_image] SUCCESS in {time.time()-t0:.1f}s")
+        return {"success": True, "results": [res]}
+
+    except VertexAPIError as e:
+        return {"success": False, "error": e.error_dict}
+    except asyncio.TimeoutError:
+        return {"success": False, "error": _build_timeout_error(model_name, ":generateContent", time.time() - t0)}
+    except Exception as e:
+        return {"success": False, "error": _build_unexpected_error(model_name, ":generateContent", e, time.time() - t0)}
 
 
 async def edit_image(
@@ -823,7 +914,7 @@ async def upscale_image(
 async def remove_background(
     base_image_path: str,
     output_path: Optional[str] = None,
-    model_name: str = "imagen-3.0-generate-002",
+    model_name: str = "imagen-3.0-capability-001",
     return_base64: bool = False,
 ) -> Dict[str, Any]:
     t0 = time.time()
@@ -837,7 +928,14 @@ async def remove_background(
     try:
         base_b64 = _read_image_b64(base_image_path)
         payload = {
-            "instances": [{"prompt": "", "image": {"bytesBase64Encoded": base_b64}}],
+            "instances": [{
+                "prompt": "",
+                "referenceImages": [{
+                    "referenceType": "REFERENCE_TYPE_RAW",
+                    "referenceId": 1,
+                    "referenceImage": {"bytesBase64Encoded": base_b64},
+                }],
+            }],
             "parameters": {"sampleCount": 1, "editMode": "EDIT_MODE_BGSWAP"},
         }
         response = await _to_thread(_imagen_predict, model_name, payload, timeout=API_TIMEOUT)
@@ -872,18 +970,255 @@ async def generate_video(
     prompt: str,
     output_path: str,
     model_name: str = "veo-3.1-fast-generate-001",
+    duration: int = 4,
+    resolution: str = "1080p",
+    aspect_ratio: str = "16:9",
+    audio_enabled: bool = False,
 ) -> Dict[str, Any]:
     t0 = time.time()
-    logger.info(f"[generate_video] START | model={model_name} | prompt='{prompt[:80]}...'")
+    logger.info(f"[generate_video] START | model={model_name} | prompt='{prompt[:80]}'")
     try:
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         with open(output_path, "w") as f:
-            f.write("Simulated video data for: " + prompt)
+            f.write(f"Simulated video | prompt={prompt} | duration={duration}s | {resolution} | {aspect_ratio}")
         logger.info(f"[generate_video] Placeholder written to {output_path} in {time.time()-t0:.1f}s")
         return {
             "success": True,
             "path": output_path,
-            "note": "Placeholder stub - real VideoGenerationModel SDK integration pending.",
+            "duration": duration,
+            "resolution": resolution,
+            "aspect_ratio": aspect_ratio,
+            "audio_enabled": audio_enabled,
+            "note": "Placeholder stub — real Veo SDK integration pending.",
         }
     except Exception as e:
         return {"success": False, "error": _build_unexpected_error(model_name, ":predictLongRunning", e, time.time() - t0)}
+
+
+async def image_to_video(
+    first_frame_path: str,
+    output_path: str,
+    prompt: str = "",
+    last_frame_path: Optional[str] = None,
+    model_name: str = "veo-3.1-fast-generate-001",
+    duration: int = 4,
+    aspect_ratio: str = "16:9",
+) -> Dict[str, Any]:
+    """Generate a video using an image as the first frame (optionally last frame too).
+
+    Stub — real Veo image-to-video SDK integration pending.
+    """
+    t0 = time.time()
+    logger.info(f"[image_to_video] START | model={model_name} | first_frame={first_frame_path}")
+
+    if not os.path.exists(first_frame_path):
+        return {"success": False, "error": _build_validation_error(f"First frame not found: {first_frame_path}")}
+    if last_frame_path and not os.path.exists(last_frame_path):
+        return {"success": False, "error": _build_validation_error(f"Last frame not found: {last_frame_path}")}
+
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        mode = "first+last" if last_frame_path else "first-frame"
+        with open(output_path, "w") as f:
+            f.write(f"Simulated video | mode={mode} | prompt={prompt} | duration={duration}s | {aspect_ratio}")
+        logger.info(f"[image_to_video] Placeholder written to {output_path} in {time.time()-t0:.1f}s")
+        return {
+            "success": True,
+            "path": output_path,
+            "duration": duration,
+            "aspect_ratio": aspect_ratio,
+            "mode": mode,
+            "note": "Placeholder stub — real Veo image-to-video SDK integration pending.",
+        }
+    except Exception as e:
+        return {"success": False, "error": _build_unexpected_error(model_name, ":predictLongRunning", e, time.time() - t0)}
+
+
+async def extend_video(
+    video_path: str,
+    output_path: str,
+    prompt: str = "",
+    extra_seconds: int = 4,
+    model_name: str = "veo-3.1-fast-generate-001",
+) -> Dict[str, Any]:
+    """Extend an existing video by extra_seconds seconds.
+
+    Stub — real Veo video-extension SDK integration pending.
+    """
+    t0 = time.time()
+    logger.info(f"[extend_video] START | model={model_name} | video={video_path} | extra={extra_seconds}s")
+
+    if not os.path.exists(video_path):
+        return {"success": False, "error": _build_validation_error(f"Video not found: {video_path}")}
+    if extra_seconds not in (4, 6, 8):
+        return {"success": False, "error": _build_validation_error(
+            f"extra_seconds must be 4, 6, or 8. Got: {extra_seconds}"
+        )}
+
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        with open(output_path, "w") as f:
+            f.write(f"Simulated extended video | source={video_path} | extra={extra_seconds}s | prompt={prompt}")
+        logger.info(f"[extend_video] Placeholder written to {output_path} in {time.time()-t0:.1f}s")
+        return {
+            "success": True,
+            "path": output_path,
+            "extra_seconds": extra_seconds,
+            "note": "Placeholder stub — real Veo extend SDK integration pending.",
+        }
+    except Exception as e:
+        return {"success": False, "error": _build_unexpected_error(model_name, ":predictLongRunning", e, time.time() - t0)}
+
+
+async def video_object_edit(
+    video_path: str,
+    operation: str,
+    prompt: str,
+    output_path: str,
+    model_name: str = "veo-3.1-fast-generate-001",
+) -> Dict[str, Any]:
+    """Insert or remove an object in a video.
+
+    operation: 'insert' | 'remove'
+    Stub — real Veo object-edit SDK integration pending.
+    """
+    t0 = time.time()
+    logger.info(f"[video_object_edit] START | op={operation} | model={model_name} | video={video_path}")
+
+    if operation not in ("insert", "remove"):
+        return {"success": False, "error": _build_validation_error(
+            f"operation must be 'insert' or 'remove'. Got: {operation!r}"
+        )}
+    if not os.path.exists(video_path):
+        return {"success": False, "error": _build_validation_error(f"Video not found: {video_path}")}
+
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        with open(output_path, "w") as f:
+            f.write(f"Simulated video object edit | op={operation} | prompt={prompt}")
+        logger.info(f"[video_object_edit] Placeholder written to {output_path} in {time.time()-t0:.1f}s")
+        return {
+            "success": True,
+            "path": output_path,
+            "operation": operation,
+            "note": "Placeholder stub — real Veo object-edit SDK integration pending.",
+        }
+    except Exception as e:
+        return {"success": False, "error": _build_unexpected_error(model_name, ":predictLongRunning", e, time.time() - t0)}
+
+
+async def batch_generate(
+    prompts: List[str],
+    output_prefix: str,
+    output_dir: Optional[str] = None,
+    model_name: str = "imagen-4.0-fast-generate-001",
+    aspect_ratio: str = "1:1",
+) -> Dict[str, Any]:
+    """Generate images for multiple prompts in parallel (max 4 concurrent)."""
+    t0 = time.time()
+    logger.info(f"[batch_generate] START | n={len(prompts)} | model={model_name}")
+
+    if len(prompts) > 10:
+        return {"success": False, "error": _build_validation_error(
+            f"batch_generate accepts at most 10 prompts. Got: {len(prompts)}"
+        )}
+
+    resolved_dir = output_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
+    os.makedirs(resolved_dir, exist_ok=True)
+
+    semaphore = asyncio.Semaphore(4)
+
+    async def _one(prompt: str, idx: int) -> Dict[str, Any]:
+        async with semaphore:
+            out = os.path.join(resolved_dir, f"{output_prefix}_{idx}.png")
+            result = await generate_image(
+                prompt=prompt,
+                output_path=out,
+                model_name=model_name,
+                aspect_ratio=aspect_ratio,
+            )
+            return {"prompt": prompt, "index": idx, **result}
+
+    tasks = [_one(p, i) for i, p in enumerate(prompts)]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    processed = []
+    for r in results:
+        if isinstance(r, Exception):
+            processed.append({"success": False, "error": {"message": str(r)}})
+        else:
+            processed.append(r)
+
+    logger.info(f"[batch_generate] DONE in {time.time()-t0:.1f}s | n={len(processed)}")
+    return {"success": True, "results": processed, "count": len(processed)}
+
+
+async def upload_file(
+    file_path: str,
+    mime_type: Optional[str] = None,
+    display_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Register a local file as a reusable reference for other tool calls.
+
+    Returns a file_uri that can be passed to transform_image as additional_image_paths.
+    Local-reference implementation — for GCS upload, set storage_uri in generate_image instead.
+    """
+    t0 = time.time()
+    logger.info(f"[upload_file] START | path={file_path}")
+
+    if not os.path.exists(file_path):
+        return {"success": False, "error": _build_validation_error(f"File not found: {file_path}")}
+
+    abs_path = os.path.abspath(file_path)
+    size_bytes = os.path.getsize(abs_path)
+    detected_mime = mime_type or _mime_for_path(abs_path)
+    name = display_name or os.path.basename(abs_path)
+    file_uri = abs_path  # Local reference; use as additional_image_paths value
+
+    logger.info(f"[upload_file] SUCCESS in {time.time()-t0:.1f}s | size={size_bytes} | mime={detected_mime}")
+    return {
+        "success": True,
+        "file_uri": file_uri,
+        "name": name,
+        "mime_type": detected_mime,
+        "size_bytes": size_bytes,
+        "note": "Local file reference. Pass file_uri as additional_image_paths in tool_transform_image.",
+    }
+
+
+_SUPPORTED_MUSIC_MODELS = ("lyria-2", "lyria-3")
+
+
+async def generate_music(
+    prompt: str,
+    output_path: str,
+    model_name: str = "lyria-2",
+    duration: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Generate music from a text prompt using Lyria.
+
+    Stub — Lyria API availability is project-dependent.
+    Run tool_list_available_models to check if Lyria is enabled in your project.
+    """
+    t0 = time.time()
+    logger.info(f"[generate_music] START | model={model_name} | prompt='{prompt[:80]}'")
+
+    if model_name not in _SUPPORTED_MUSIC_MODELS:
+        return {"success": False, "error": _build_validation_error(
+            f"Unsupported music model '{model_name}'. Use one of: {', '.join(_SUPPORTED_MUSIC_MODELS)}"
+        )}
+
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        with open(output_path, "w") as f:
+            f.write(f"Simulated music | model={model_name} | prompt={prompt} | duration={duration}s")
+        logger.info(f"[generate_music] Placeholder written to {output_path} in {time.time()-t0:.1f}s")
+        return {
+            "success": True,
+            "path": output_path,
+            "model": model_name,
+            "duration": duration,
+            "note": "Placeholder stub — Lyria SDK integration pending. Check tool_list_available_models for Lyria availability.",
+        }
+    except Exception as e:
+        return {"success": False, "error": _build_unexpected_error(model_name, ":predict", e, time.time() - t0)}
