@@ -591,3 +591,77 @@ async def test_upload_file_autodetects_jpeg_mime(tmp_path):
     f.write_bytes(b"\xff\xd8\xff")
     result = await vertex_ai_tools.upload_file(file_path=str(f))
     assert result["mime_type"] == "image/jpeg"
+
+
+# ---- batch_generate ----------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_batch_generate_rejects_too_many_prompts():
+    result = await vertex_ai_tools.batch_generate(
+        prompts=["p"] * 11,
+        output_prefix="batch",
+        output_dir="/tmp",
+    )
+    assert result["success"] is False
+    assert "10" in result["error"]["message"]
+
+@pytest.mark.asyncio
+async def test_batch_generate_returns_per_prompt_results(tmp_path):
+    fake_response = {"predictions": [{"bytesBase64Encoded": "iVBORw0KGgo="}]}
+    with patch("vertex_ai_tools._imagen_predict", return_value=fake_response):
+        result = await vertex_ai_tools.batch_generate(
+            prompts=["cat", "dog"],
+            output_prefix="item",
+            output_dir=str(tmp_path),
+        )
+    assert result["success"] is True
+    assert len(result["results"]) == 2
+    assert result["results"][0]["prompt"] == "cat"
+    assert result["results"][1]["prompt"] == "dog"
+
+@pytest.mark.asyncio
+async def test_batch_generate_partial_failure(tmp_path):
+    call_count = 0
+    def fake_predict(model_name, payload):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise Exception("API error")
+        return {"predictions": [{"bytesBase64Encoded": "iVBORw0KGgo="}]}
+
+    with patch("vertex_ai_tools._imagen_predict", side_effect=fake_predict):
+        result = await vertex_ai_tools.batch_generate(
+            prompts=["ok", "fail", "ok2"],
+            output_prefix="b",
+            output_dir=str(tmp_path),
+        )
+    assert result["success"] is True  # overall success even if some fail
+    assert result["results"][0]["success"] is True
+    assert result["results"][1]["success"] is False
+    assert result["results"][2]["success"] is True
+
+
+# ---- generate_music ----------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_generate_music_rejects_invalid_model():
+    result = await vertex_ai_tools.generate_music(
+        prompt="upbeat jazz",
+        output_path="/tmp/track.mp3",
+        model_name="lyria-99",
+    )
+    assert result["success"] is False
+    assert "lyria" in result["error"]["message"].lower()
+
+@pytest.mark.asyncio
+async def test_generate_music_success(tmp_path):
+    out = str(tmp_path / "track.mp3")
+    result = await vertex_ai_tools.generate_music(
+        prompt="calm piano",
+        output_path=out,
+        model_name="lyria-2",
+        duration=30,
+    )
+    assert result["success"] is True
+    assert result["path"] == out
+    assert result["duration"] == 30

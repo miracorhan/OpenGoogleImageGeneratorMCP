@@ -16,11 +16,13 @@ from vertex_ai_tools import (
     generate_image, edit_image, transform_image, analyze_image,
     upscale_image, remove_background, generate_video, image_to_video,
     extend_video, video_object_edit, upload_file,
+    batch_generate, generate_music,
     gemini_generate_image,
     probe_available_models, get_cached_availability,
     _validate_output_path,
     SUPPORTED_EDIT_MODES,
 )
+from pipeline import run_pipeline
 from config import PROJECT_ID, LOCATION, DEFAULT_OUTPUT_DIR, GOOGLE_ACCESS_TOKEN, IMPERSONATE_SERVICE_ACCOUNT, logger, check_for_updates, __version__
 from discovery import get_recommended_models
 
@@ -525,6 +527,92 @@ async def tool_upload_file(params: UploadFileParams) -> dict:
         file_path=params.file_path,
         mime_type=params.mime_type,
         display_name=params.display_name,
+    )
+
+
+class BatchGenerateParams(BaseModel):
+    prompts: List[str] = Field(..., description="List of text prompts (max 10).")
+    output_prefix: str = Field(..., description="Filename prefix. Files: <prefix>_0.png, <prefix>_1.png, ...")
+    output_dir: Optional[str] = Field(None, description="Absolute directory path for output. Defaults to DEFAULT_OUTPUT_DIR.")
+    model_name: str = Field("imagen-4.0-fast-generate-001", description="Imagen model to use for all prompts.")
+    model_tier: Optional[Literal["fast", "balanced", "quality", "ultra"]] = Field(None, description="fast / balanced / quality / ultra. Overrides model_name.")
+    aspect_ratio: str = Field("1:1", description="Aspect ratio for all generated images.")
+
+@mcp.tool()
+async def tool_batch_generate(params: BatchGenerateParams) -> dict:
+    """Generate images for multiple prompts in a single call (max 10, max 4 concurrent)."""
+    from model_registry import resolve_model
+
+    resolved_model = params.model_name
+    if params.model_tier:
+        resolved_model, _ = resolve_model(params.model_tier, "generate")
+
+    output_dir = params.output_dir or DEFAULT_OUTPUT_DIR
+
+    return await batch_generate(
+        prompts=params.prompts,
+        output_prefix=params.output_prefix,
+        output_dir=output_dir,
+        model_name=resolved_model,
+        aspect_ratio=params.aspect_ratio,
+    )
+
+
+class PipelineStepModel(BaseModel):
+    tool: str = Field(..., description="Tool name: generate / edit / transform / upscale / remove_background")
+    params: dict = Field(default_factory=dict, description="Parameters for this tool step (excluding output path, which is managed by the pipeline).")
+
+class RunPipelineParams(BaseModel):
+    steps: List[PipelineStepModel] = Field(..., description="Ordered list of pipeline steps.")
+    output_path: Optional[str] = Field(None, description="Absolute path for the final output image.")
+    output_filename: Optional[str] = Field(None, description="Output filename saved to DEFAULT_OUTPUT_DIR. Used if output_path not given.")
+
+@mcp.tool()
+async def tool_run_pipeline(params: RunPipelineParams) -> dict:
+    """Chain image processing steps sequentially. Each step's output becomes the next step's input.
+    Supported tools: generate, edit, transform, upscale, remove_background.
+    Example: generate → remove_background → upscale."""
+
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        final_path = None  # pipeline manages intermediates in temp dir
+
+    steps_dicts = [{"tool": s.tool, "params": s.params} for s in params.steps]
+    return await run_pipeline(steps=steps_dicts, output_path=final_path)
+
+
+class GenerateMusicParams(BaseModel):
+    prompt: str = Field(..., description="Text description of the music to generate.")
+    output_filename: Optional[str] = Field(None, description="Output filename (e.g. track.mp3). Required if output_path not given.")
+    output_path: Optional[str] = Field(None, description="Absolute output file path.")
+    model_name: Literal["lyria-2", "lyria-3"] = Field("lyria-2", description="Lyria model version.")
+    duration: Optional[int] = Field(None, description="Desired music duration in seconds (optional).")
+
+@mcp.tool()
+async def tool_generate_music(params: GenerateMusicParams) -> dict:
+    """Generate music from a text prompt using Lyria. Check tool_list_available_models to verify Lyria is enabled in your project."""
+
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
+
+    return await generate_music(
+        prompt=params.prompt,
+        output_path=final_path,
+        model_name=params.model_name,
+        duration=params.duration,
     )
 
 

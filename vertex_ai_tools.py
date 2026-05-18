@@ -1107,6 +1107,52 @@ async def video_object_edit(
         return {"success": False, "error": _build_unexpected_error(model_name, ":predictLongRunning", e, time.time() - t0)}
 
 
+async def batch_generate(
+    prompts: List[str],
+    output_prefix: str,
+    output_dir: Optional[str] = None,
+    model_name: str = "imagen-4.0-fast-generate-001",
+    aspect_ratio: str = "1:1",
+) -> Dict[str, Any]:
+    """Generate images for multiple prompts in parallel (max 4 concurrent)."""
+    t0 = time.time()
+    logger.info(f"[batch_generate] START | n={len(prompts)} | model={model_name}")
+
+    if len(prompts) > 10:
+        return {"success": False, "error": _build_validation_error(
+            f"batch_generate accepts at most 10 prompts. Got: {len(prompts)}"
+        )}
+
+    resolved_dir = output_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
+    os.makedirs(resolved_dir, exist_ok=True)
+
+    semaphore = asyncio.Semaphore(4)
+
+    async def _one(prompt: str, idx: int) -> Dict[str, Any]:
+        async with semaphore:
+            out = os.path.join(resolved_dir, f"{output_prefix}_{idx}.png")
+            result = await generate_image(
+                prompt=prompt,
+                output_path=out,
+                model_name=model_name,
+                aspect_ratio=aspect_ratio,
+            )
+            return {"prompt": prompt, "index": idx, **result}
+
+    tasks = [_one(p, i) for i, p in enumerate(prompts)]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    processed = []
+    for r in results:
+        if isinstance(r, Exception):
+            processed.append({"success": False, "error": {"message": str(r)}})
+        else:
+            processed.append(r)
+
+    logger.info(f"[batch_generate] DONE in {time.time()-t0:.1f}s | n={len(processed)}")
+    return {"success": True, "results": processed, "count": len(processed)}
+
+
 async def upload_file(
     file_path: str,
     mime_type: Optional[str] = None,
@@ -1138,3 +1184,41 @@ async def upload_file(
         "size_bytes": size_bytes,
         "note": "Local file reference. Pass file_uri as additional_image_paths in tool_transform_image.",
     }
+
+
+_SUPPORTED_MUSIC_MODELS = ("lyria-2", "lyria-3")
+
+
+async def generate_music(
+    prompt: str,
+    output_path: str,
+    model_name: str = "lyria-2",
+    duration: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Generate music from a text prompt using Lyria.
+
+    Stub — Lyria API availability is project-dependent.
+    Run tool_list_available_models to check if Lyria is enabled in your project.
+    """
+    t0 = time.time()
+    logger.info(f"[generate_music] START | model={model_name} | prompt='{prompt[:80]}'")
+
+    if model_name not in _SUPPORTED_MUSIC_MODELS:
+        return {"success": False, "error": _build_validation_error(
+            f"Unsupported music model '{model_name}'. Use one of: {', '.join(_SUPPORTED_MUSIC_MODELS)}"
+        )}
+
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        with open(output_path, "w") as f:
+            f.write(f"Simulated music | model={model_name} | prompt={prompt} | duration={duration}s")
+        logger.info(f"[generate_music] Placeholder written to {output_path} in {time.time()-t0:.1f}s")
+        return {
+            "success": True,
+            "path": output_path,
+            "model": model_name,
+            "duration": duration,
+            "note": "Placeholder stub — Lyria SDK integration pending. Check tool_list_available_models for Lyria availability.",
+        }
+    except Exception as e:
+        return {"success": False, "error": _build_unexpected_error(model_name, ":predict", e, time.time() - t0)}
