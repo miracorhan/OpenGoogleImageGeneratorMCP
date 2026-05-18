@@ -429,20 +429,31 @@ async def test_generate_image_enhance_prompt_default_true():
 
 @pytest.mark.asyncio
 async def test_gemini_generate_image_returns_success():
+    fake_b64 = "iVBORw0KGgo="
     fake_response = {
         "candidates": [{
             "content": {
-                "parts": [{"inlineData": {"data": "iVBORw0KGgo=", "mimeType": "image/png"}}]
+                "parts": [{"inlineData": {"data": fake_b64, "mimeType": "image/png"}}]
             }
         }]
     }
-    with patch("vertex_ai_tools._gemini_generate_content", return_value=fake_response):
+    captured = {}
+    def fake_generate(model_name, contents, generation_config):
+        captured["model"] = model_name
+        captured["generation_config"] = generation_config
+        return fake_response
+
+    with patch("vertex_ai_tools._gemini_generate_content", side_effect=fake_generate):
         result = await vertex_ai_tools.gemini_generate_image(
             prompt="a red apple",
             model_name="gemini-2.5-flash-image",
+            return_base64=True,
         )
     assert result["success"] is True
     assert "results" in result
+    assert result["results"][0]["base64"] == fake_b64
+    assert captured["generation_config"]["responseModalities"] == ["IMAGE", "TEXT"]
+    assert captured["model"] == "gemini-2.5-flash-image"
 
 @pytest.mark.asyncio
 async def test_gemini_generate_image_no_image_returns_failure():

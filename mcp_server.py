@@ -3,7 +3,7 @@
 
 import asyncio
 import os
-from typing import Optional, List
+from typing import Literal, Optional, List
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
@@ -92,9 +92,9 @@ class GenerateImageParams(BaseModel):
     seed: Optional[int] = Field(None, description="Seed for deterministic output. Requires add_watermark=False.")
     enhance_prompt: bool = Field(True, description="Use LLM-based prompt rewriting for better results.")
     add_watermark: bool = Field(True, description="Add SynthID digital watermark. Must be False when seed is set.")
-    safety_setting: str = Field("block_medium_and_above", description="Safety filter: block_low_and_above / block_medium_and_above / block_only_high.")
-    person_generation: str = Field("allow_adult", description="Person generation policy: allow_all / allow_adult / dont_allow.")
-    output_format: str = Field("PNG", description="Output format: PNG or JPEG.")
+    safety_setting: Literal["block_low_and_above", "block_medium_and_above", "block_only_high"] = Field("block_medium_and_above", description="Safety filter level.")
+    person_generation: Literal["allow_all", "allow_adult", "dont_allow"] = Field("allow_adult", description="Person generation policy.")
+    output_format: Literal["PNG", "JPEG"] = Field("PNG", description="Output format.")
     compression_quality: int = Field(85, ge=0, le=100, description="JPEG compression quality (0-100). Only applies when output_format=JPEG.")
     storage_uri: Optional[str] = Field(None, description="Cloud Storage destination (e.g. gs://bucket/path/). Image is written directly to GCS.")
 
@@ -108,11 +108,14 @@ async def tool_generate_image(params: GenerateImageParams) -> dict:
     from model_registry import resolve_model
 
     if params.output_path:
-        final_path = _validate_output_path(params.output_path)
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
     elif params.output_filename:
         final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
     else:
-        return {"success": False, "error": "Provide output_filename or output_path."}
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
 
     resolved_model = params.model_name
     api_backend = "imagen"
