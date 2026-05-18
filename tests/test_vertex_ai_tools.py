@@ -361,11 +361,23 @@ def test_validate_output_path_accepts_absolute():
     assert result == abs_path
 
 
+def test_validate_output_path_accepts_dotdot_in_filename():
+    import os
+    abs_path = os.path.abspath("outputs/foo..bar.png")
+    result = _validate_output_path(abs_path)
+    assert result == abs_path
+
+
 def test_validate_output_path_rejects_relative():
     with pytest.raises(ValueError, match="absolute"):
         _validate_output_path("relative/path/file.png")
 
 
 def test_validate_output_path_rejects_dotdot():
-    with pytest.raises(ValueError, match="absolute"):
+    with pytest.raises(ValueError, match=r"\.\."):
         _validate_output_path("C:/outputs/../secret/file.png")
+
+
+def test_validate_output_path_rejects_dotdot_backslash():
+    with pytest.raises(ValueError, match=r"\.\."):
+        _validate_output_path("C:\\outputs\\..\\secret\\file.png")

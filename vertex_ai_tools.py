@@ -106,10 +106,10 @@ def _mime_for_path(path: str) -> str:
 
 def _validate_output_path(path: str) -> str:
     """Ensure output_path is absolute and contains no '..' components."""
-    if not os.path.isabs(path) or ".." in path.replace("\\", "/").split("/"):
-        raise ValueError(
-            f"output_path must be an absolute path without '..' components. Got: {path!r}"
-        )
+    if not os.path.isabs(path):
+        raise ValueError(f"output_path must be an absolute path. Got: {path!r}")
+    if ".." in path.replace("\\", "/").split("/"):
+        raise ValueError(f"output_path must not contain '..' components. Got: {path!r}")
     return os.path.abspath(path)
 
 
