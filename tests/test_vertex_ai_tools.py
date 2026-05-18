@@ -353,6 +353,13 @@ def test_supported_edit_modes_includes_defaults():
     assert "EDIT_MODE_OUTPAINT" in SUPPORTED_EDIT_MODES
 
 
+def test_probe_candidates_includes_ultra_model():
+    """imagen-4.0-ultra-generate-001 must be probed so tool_list_available_models can report it."""
+    from vertex_ai_tools import _PROBE_CANDIDATES
+    models = [m[0] for m in _PROBE_CANDIDATES]
+    assert "imagen-4.0-ultra-generate-001" in models
+
+
 # ---- _validate_output_path --------------------------------------------------
 
 def test_validate_output_path_accepts_absolute():

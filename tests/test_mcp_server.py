@@ -1,9 +1,11 @@
 import pytest
 from unittest.mock import patch
+from pydantic import ValidationError
 from mcp_server import (
     tool_generate_image, tool_edit_image, tool_transform_image,
-    tool_list_available_models,
+    tool_list_available_models, tool_run_pipeline, tool_batch_generate,
     GenerateImageParams, EditImageParams, TransformImageParams,
+    BatchGenerateParams, RunPipelineParams, PipelineStepModel,
 )
 
 
@@ -88,3 +90,19 @@ def test_transform_image_params_defaults():
     p = TransformImageParams(prompt="x", base_image_path="b.png", output_filename="o.png")
     assert p.model_name == "gemini-2.5-flash-image"
     assert p.additional_image_paths is None
+
+
+def test_batch_generate_params_rejects_balanced_tier():
+    with pytest.raises(ValidationError):
+        BatchGenerateParams(prompts=["a"], output_prefix="p", model_tier="balanced")
+
+
+@pytest.mark.asyncio
+async def test_tool_run_pipeline_requires_output():
+    params = RunPipelineParams(
+        steps=[PipelineStepModel(tool="generate", params={"prompt": "cat"})],
+    )
+    result = await tool_run_pipeline(params)
+    assert result["success"] is False
+    assert result["error"]["code"] == "VALIDATION"
+    assert "output" in result["error"]["message"].lower()

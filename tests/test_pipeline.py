@@ -49,3 +49,20 @@ async def test_pipeline_rejects_unknown_tool(tmp_path):
     result = await run_pipeline(steps=steps, output_path=str(tmp_path / "out.png"), work_dir=str(tmp_path))
     assert result["success"] is False
     assert "unknown" in result["error"].lower()
+
+
+def test_resolve_step_params_edit_tier_returns_imagen_model():
+    """edit steps with model_tier must resolve to an Imagen model, not Gemini."""
+    from pipeline import _resolve_step_params
+    result = _resolve_step_params("edit", {"prompt": "add hat", "model_tier": "fast"})
+    assert "model_tier" not in result
+    assert "model_name" in result
+    assert result["model_name"].startswith("imagen"), (
+        f"Expected Imagen model for edit tier, got {result['model_name']!r}"
+    )
+
+
+def test_resolve_step_params_edit_quality_tier_returns_imagen_model():
+    from pipeline import _resolve_step_params
+    result = _resolve_step_params("edit", {"prompt": "x", "model_tier": "quality"})
+    assert result["model_name"].startswith("imagen")

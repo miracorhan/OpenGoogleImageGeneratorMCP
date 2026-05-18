@@ -2,6 +2,7 @@
 # License: Open Source (MIT License) - Free for everyone to use, modify, and distribute.
 
 import asyncio
+import functools
 import os
 import base64
 import json
@@ -18,6 +19,7 @@ from vertexai.generative_models import GenerativeModel, Part, GenerationConfig
 from config import logger, PROJECT_ID, LOCATION
 
 API_TIMEOUT = 90.0
+UPSCALE_TIMEOUT = 300.0  # upscale is slower; allow up to 5 min
 HTTP_TIMEOUT = 90.0
 TOKEN_TIMEOUT = 30.0
 
@@ -53,6 +55,7 @@ MASK_REQUIRED_MODES = (
 _PROBE_CANDIDATES: Tuple[Tuple[str, str, str], ...] = (
     ("imagen-4.0-fast-generate-001",   ":predict",         "image_generation"),
     ("imagen-4.0-generate-001",        ":predict",         "image_generation"),
+    ("imagen-4.0-ultra-generate-001",  ":predict",         "image_generation"),
     ("imagen-3.0-generate-002",        ":predict",         "image_generation"),
     ("imagen-3.0-capability-001",      ":predict",         "image_generation"),
     ("gemini-3.1-flash-image",         ":generateContent", "image_transformation"),
@@ -115,7 +118,17 @@ def _validate_output_path(path: str) -> str:
 
 
 async def _to_thread(func, *args, timeout: float = API_TIMEOUT, **kwargs):
-    return await asyncio.wait_for(asyncio.to_thread(func, *args, **kwargs), timeout=timeout)
+    # asyncio.wait_for + to_thread blocks on cleanup in Python 3.14 when the
+    # underlying thread cannot be interrupted (e.g. a long urllib request).
+    # asyncio.wait with timeout returns immediately once the deadline passes
+    # without waiting for the thread, so the caller gets the TimeoutError
+    # promptly while the background thread drains on its own.
+    loop = asyncio.get_running_loop()
+    future = loop.run_in_executor(None, functools.partial(func, *args, **kwargs))
+    done, _ = await asyncio.wait({future}, timeout=timeout)
+    if not done:
+        raise asyncio.TimeoutError()
+    return future.result()  # re-raises any exception the thread raised
 
 
 def _resolve_gcloud_path() -> str:
@@ -880,10 +893,10 @@ async def upscale_image(
     try:
         base_b64 = _read_image_b64(base_image_path)
         payload = {
-            "instances": [{"image": {"bytesBase64Encoded": base_b64}}],
+            "instances": [{"prompt": "", "image": {"bytesBase64Encoded": base_b64}}],
             "parameters": {"sampleCount": 1, "mode": "upscale", "upscaleConfig": {"upscaleFactor": "x2"}},
         }
-        response = await _to_thread(_imagen_predict, model_name, payload, timeout=API_TIMEOUT)
+        response = await _to_thread(_imagen_predict, model_name, payload, timeout=UPSCALE_TIMEOUT)
         images = _extract_image_bytes_list(response)
         if not images:
             return {"success": False, "error": _build_unexpected_error(

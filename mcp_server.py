@@ -535,7 +535,7 @@ class BatchGenerateParams(BaseModel):
     output_prefix: str = Field(..., description="Filename prefix. Files: <prefix>_0.png, <prefix>_1.png, ...")
     output_dir: Optional[str] = Field(None, description="Absolute directory path for output. Defaults to DEFAULT_OUTPUT_DIR.")
     model_name: str = Field("imagen-4.0-fast-generate-001", description="Imagen model to use for all prompts.")
-    model_tier: Optional[Literal["fast", "balanced", "quality", "ultra"]] = Field(None, description="fast / balanced / quality / ultra. Overrides model_name.")
+    model_tier: Optional[Literal["fast", "quality", "ultra"]] = Field(None, description="fast / quality / ultra. Overrides model_name. ('balanced' is not supported for batch — it routes to Gemini which is Imagen-incompatible.)")
     aspect_ratio: str = Field("1:1", description="Aspect ratio for all generated images.")
 
 @mcp.tool()
@@ -581,7 +581,7 @@ async def tool_run_pipeline(params: RunPipelineParams) -> dict:
     elif params.output_filename:
         final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
     else:
-        final_path = None  # pipeline manages intermediates in temp dir
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
 
     steps_dicts = [{"tool": s.tool, "params": s.params} for s in params.steps]
     return await run_pipeline(steps=steps_dicts, output_path=final_path)
