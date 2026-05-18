@@ -6,13 +6,67 @@ This project is a Model Context Protocol (MCP) server that exposes Google Cloud 
 
 The server provides a comprehensive suite of MCP tools for interacting with Vertex AI:
 
-- **`tool_list_available_models`**: Dynamically fetches and lists recommended and published models available on Vertex AI.
-- **`tool_generate_image`**: Generates high-quality images from text prompts using Imagen models (e.g., gemini-3.1-flash-image).
-- **`tool_edit_image`**: Edits existing images based on text instructions.
-- **`tool_analyze_image`**: Performs multimodal image analysis and reasoning using Gemini Vision models (e.g., gemini-3.1-pro).
-- **`tool_upscale_image`**: Upscales low-resolution images to higher qualities.
-- **`tool_remove_background`**: Isolates subjects by removing the background from an image.
-- **`tool_generate_video`**: Generates videos from text prompts (Currently acts as a forward-compatible stub for models like Veo 3.1).
+- **`tool_list_available_models`**: Live-probes every candidate publisher model in the configured project/location and returns only the ones that actually respond (200/400 = reachable, 404 = excluded). Cached for the server process lifetime; pass `force_refresh=true` to rescan.
+- **`tool_generate_image`**: Text-to-image generation via Imagen (default: `imagen-4.0-fast-generate-001`).
+- **`tool_edit_image`**: Precision image editing via **Imagen 3 Capability** (`imagen-3.0-capability-001`). Supports mask-based inpaint/outpaint, background swap, product image, and mask-free prompt-driven edit. See *Edit modes* below.
+- **`tool_transform_image`**: *(new)* Free-form `image + text → image` transformation via **Gemini multimodal** (`gemini-2.5-flash-image`). Use for style transfer, scene rewriting, or any natural-language image edit that doesn't need pixel-precise masking. Accepts optional additional reference images.
+- **`tool_analyze_image`**: Multimodal image analysis via Gemini Vision (default: `gemini-2.5-flash`).
+- **`tool_upscale_image`**: Upscales low-resolution images via Imagen.
+- **`tool_remove_background`**: Removes background via Imagen `EDIT_MODE_BGSWAP`.
+- **`tool_generate_video`**: Currently a forward-compatible stub for Veo 3.1.
+
+### Edit modes (`tool_edit_image`)
+
+| `edit_mode` | What it does | Mask required? |
+|---|---|---|
+| `EDIT_MODE_DEFAULT` *(default)* | Prompt-driven full-image edit, no mask | No |
+| `EDIT_MODE_INPAINT_INSERTION` | Add an object into the masked region | **Yes** |
+| `EDIT_MODE_INPAINT_REMOVAL` | Remove content in the masked region | **Yes** |
+| `EDIT_MODE_OUTPAINT` | Extend the image beyond its original bounds | **Yes** |
+| `EDIT_MODE_BGSWAP` | Swap the background | No |
+| `EDIT_MODE_PRODUCT_IMAGE` | Product reference styling | No |
+
+Use `imagen-3.0-capability-001` (default) for all of the above. The legacy `imagen-3.0-generate-002` model only supports `EDIT_MODE_DEFAULT` and does not accept a mask.
+
+### When to use which "image + text → image" tool
+
+| Need | Use |
+|---|---|
+| Mask-based inpaint/outpaint/BG-swap with pixel precision | **`tool_edit_image`** (Imagen Capability) |
+| "Make it look like X" / style transfer / scene rewriting / multi-reference compositions | **`tool_transform_image`** (Gemini multimodal) |
+
+### Error handling
+
+All tools return a uniform error shape so MCP clients and direct Python callers see the same diagnostics:
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": 404,
+    "model": "gemini-9.9-nonexistent",
+    "endpoint": ":generateContent",
+    "message": "Publisher Model `...` is not found.",
+    "hint": "Model '...' not found in project '...' / location '...'. Try: gemini-2.5-flash-image.",
+    "docs_url": "https://docs.cloud.google.com/...",
+    "log_path": ".../logs/vertex_ai_mcp.log",
+    "duration_s": 0.42
+  }
+}
+```
+
+| HTTP code | What you'll see in `error.hint` |
+|---|---|
+| 400 | Vertex's parameter-validation message verbatim |
+| 401 | "Run `gcloud auth application-default login` and retry." |
+| 403 | IAM role hint (`roles/aiplatform.user`) + Vertex AI API enablement check |
+| 404 | Live alternatives from the probe cache (`tool_list_available_models`) |
+| 429 | `Retry after N` (from `Retry-After` header) + quota-increase pointer |
+| 500/502/503/504 | "Safe to retry once" |
+| `TIMEOUT` | After 90s — suggests a `-fast-` variant |
+| `VALIDATION` | Client-side validation failure (mask missing, file not found, etc.); **no HTTP call is made** |
+
+Full request/response logs are written to `logs/vertex_ai_mcp.log` (also surfaced in `error.log_path`).
 
 ### Resources & Prompts
 
@@ -107,5 +161,7 @@ To use this server, you need to configure your MCP client (such as Claude Deskto
 
 Once configured and the client is restarted, you can ask your AI assistant tasks like:
 - *"Generate an image of a futuristic city at sunset."*
+- *"Edit this banner — add a glowing cyan halo around the logo."* (uses `tool_edit_image`, `EDIT_MODE_DEFAULT`)
+- *"Transform this photo into a hand-drawn pencil sketch."* (uses `tool_transform_image`)
 - *"Remove the background from the image I just generated."*
 - *"Analyze this image and tell me what objects are present."*

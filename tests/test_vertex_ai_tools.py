@@ -1,11 +1,16 @@
 import base64
-import pytest
+import urllib.error
+from io import BytesIO
 from unittest.mock import MagicMock, patch, AsyncMock
 
+import pytest
+
 from vertex_ai_tools import (
-    generate_image, edit_image, analyze_image,
+    generate_image, edit_image, transform_image, analyze_image,
     upscale_image, remove_background,
     _encode_base64, _save_image_bytes,
+    _handle_vertex_http_error, _build_validation_error,
+    SUPPORTED_EDIT_MODES,
 )
 
 FAKE_PNG = b"\x89PNG\r\n\x1a\nfake-image-payload"
@@ -20,6 +25,17 @@ def _clear_caches():
     _gemini_model_cache.clear()
 
 
+# ---- helpers ----------------------------------------------------------------
+
+def _http_error(code: int, body: str = "{}", headers=None) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        url="https://example/test", code=code, msg="Test",
+        hdrs=headers or {}, fp=BytesIO(body.encode("utf-8")),
+    )
+
+
+# ---- basic helpers ----------------------------------------------------------
+
 def test_encode_base64():
     assert _encode_base64(FAKE_PNG) == base64.b64encode(FAKE_PNG).decode("utf-8")
 
@@ -31,16 +47,16 @@ def test_save_image_bytes(tmp_path):
         assert f.read() == FAKE_PNG
 
 
+# ---- generate_image ---------------------------------------------------------
+
 @pytest.mark.asyncio
 @patch("vertex_ai_tools._imagen_predict")
 async def test_generate_image_success(mock_predict, tmp_path):
     mock_predict.return_value = {"predictions": [{"bytesBase64Encoded": FAKE_B64, "mimeType": "image/png"}]}
     out = str(tmp_path / "img.png")
     result = await generate_image(
-        prompt="a cat",
-        output_path=out,
-        model_name="imagen-4.0-fast-generate-001",
-        return_base64=True,
+        prompt="a cat", output_path=out,
+        model_name="imagen-4.0-fast-generate-001", return_base64=True,
     )
     assert result["success"] is True
     assert result["results"][0]["base64"] == FAKE_B64
@@ -49,28 +65,247 @@ async def test_generate_image_success(mock_predict, tmp_path):
 
 @pytest.mark.asyncio
 @patch("vertex_ai_tools._imagen_predict")
-async def test_generate_image_failure(mock_predict):
-    mock_predict.side_effect = RuntimeError("HTTP 500: boom")
+async def test_generate_image_http_404(mock_predict):
+    from vertex_ai_tools import VertexAPIError
+    err_dict = _handle_vertex_http_error(_http_error(404, '{"error":{"message":"not found"}}'),
+                                          "imagen-4.0-fast-generate-001", ":predict", 0.4)
+    mock_predict.side_effect = VertexAPIError(err_dict)
     result = await generate_image(prompt="a cat", model_name="imagen-4.0-fast-generate-001")
     assert result["success"] is False
-    assert "boom" in result["error"]
+    assert result["error"]["code"] == 404
+    assert result["error"]["model"] == "imagen-4.0-fast-generate-001"
+    assert "hint" in result["error"]
 
 
 @pytest.mark.asyncio
 async def test_generate_image_rejects_non_imagen_model():
     result = await generate_image(prompt="x", model_name="gemini-2.5-flash")
     assert result["success"] is False
-    assert "not a supported image-generation model" in result["error"]
+    assert result["error"]["code"] == "VALIDATION"
+    assert "not a supported image-generation model" in result["error"]["message"]
 
+
+# ---- edit_image (Imagen 3 Capability) --------------------------------------
+
+@pytest.mark.asyncio
+@patch("vertex_ai_tools._imagen_predict")
+async def test_edit_image_capability_default_mode(mock_predict, tmp_path):
+    mock_predict.return_value = {"predictions": [{"bytesBase64Encoded": FAKE_B64}]}
+    base = tmp_path / "base.png"; base.write_bytes(FAKE_PNG)
+    out = str(tmp_path / "edited.png")
+
+    result = await edit_image(
+        prompt="make it snowy", base_image_path=str(base),
+        output_path=out, model_name="imagen-3.0-capability-001",
+        return_base64=True,
+    )
+    assert result["success"] is True
+    # Payload assertion: must use referenceImages[] for capability model
+    call_payload = mock_predict.call_args[0][1]
+    assert "referenceImages" in call_payload["instances"][0]
+    refs = call_payload["instances"][0]["referenceImages"]
+    assert refs[0]["referenceType"] == "REFERENCE_TYPE_RAW"
+    assert refs[0]["referenceImage"]["bytesBase64Encoded"] == FAKE_B64
+    assert call_payload["parameters"]["editMode"] == "EDIT_MODE_DEFAULT"
+
+
+@pytest.mark.asyncio
+@patch("vertex_ai_tools._imagen_predict")
+async def test_edit_image_capability_with_mask(mock_predict, tmp_path):
+    mock_predict.return_value = {"predictions": [{"bytesBase64Encoded": FAKE_B64}]}
+    base = tmp_path / "base.png"; base.write_bytes(FAKE_PNG)
+    mask = tmp_path / "mask.png"; mask.write_bytes(b"\x89PNG\r\n\x1a\nmaskbytes")
+
+    result = await edit_image(
+        prompt="add a hat", base_image_path=str(base),
+        mask_image_path=str(mask), edit_mode="EDIT_MODE_INPAINT_INSERTION",
+        model_name="imagen-3.0-capability-001",
+    )
+    assert result["success"] is True
+    refs = mock_predict.call_args[0][1]["instances"][0]["referenceImages"]
+    assert len(refs) == 2
+    assert refs[1]["referenceType"] == "REFERENCE_TYPE_MASK"
+    assert refs[1]["maskImageConfig"]["maskMode"] == "MASK_MODE_USER_PROVIDED"
+
+
+@pytest.mark.asyncio
+async def test_edit_image_mask_required_validation(tmp_path):
+    base = tmp_path / "base.png"; base.write_bytes(FAKE_PNG)
+    result = await edit_image(
+        prompt="remove a thing", base_image_path=str(base),
+        edit_mode="EDIT_MODE_INPAINT_REMOVAL",
+        model_name="imagen-3.0-capability-001",
+    )
+    assert result["success"] is False
+    assert result["error"]["code"] == "VALIDATION"
+    assert "requires mask_image_path" in result["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_edit_image_unsupported_mode(tmp_path):
+    base = tmp_path / "base.png"; base.write_bytes(FAKE_PNG)
+    result = await edit_image(
+        prompt="x", base_image_path=str(base),
+        edit_mode="EDIT_MODE_BOGUS",
+        model_name="imagen-3.0-capability-001",
+    )
+    assert result["success"] is False
+    assert result["error"]["code"] == "VALIDATION"
+
+
+@pytest.mark.asyncio
+async def test_edit_image_base_not_found():
+    result = await edit_image(prompt="x", base_image_path="nonexistent.png")
+    assert result["success"] is False
+    assert result["error"]["code"] == "VALIDATION"
+    assert "not found" in result["error"]["message"]
+
+
+@pytest.mark.asyncio
+@patch("vertex_ai_tools._imagen_predict")
+async def test_edit_image_legacy_model_uses_image_field(mock_predict, tmp_path):
+    """imagen-3.0-generate-002 must use legacy 'image' field, not referenceImages."""
+    mock_predict.return_value = {"predictions": [{"bytesBase64Encoded": FAKE_B64}]}
+    base = tmp_path / "base.png"; base.write_bytes(FAKE_PNG)
+
+    result = await edit_image(
+        prompt="x", base_image_path=str(base),
+        model_name="imagen-3.0-generate-002",
+    )
+    assert result["success"] is True
+    instance = mock_predict.call_args[0][1]["instances"][0]
+    assert "image" in instance
+    assert "referenceImages" not in instance
+
+
+@pytest.mark.asyncio
+async def test_edit_image_legacy_model_rejects_mask(tmp_path):
+    base = tmp_path / "base.png"; base.write_bytes(FAKE_PNG)
+    mask = tmp_path / "mask.png"; mask.write_bytes(FAKE_PNG)
+    result = await edit_image(
+        prompt="x", base_image_path=str(base), mask_image_path=str(mask),
+        model_name="imagen-3.0-generate-002",
+    )
+    assert result["success"] is False
+    assert result["error"]["code"] == "VALIDATION"
+    assert "does not support mask" in result["error"]["message"]
+
+
+# ---- transform_image (Gemini Flash Image) ----------------------------------
+
+@pytest.mark.asyncio
+@patch("vertex_ai_tools._gemini_generate_content")
+async def test_transform_image_success(mock_gen, tmp_path):
+    mock_gen.return_value = {
+        "candidates": [{"content": {"parts": [{"inlineData": {"mimeType": "image/png", "data": FAKE_B64}}]}}]
+    }
+    base = tmp_path / "base.png"; base.write_bytes(FAKE_PNG)
+    out = str(tmp_path / "transformed.png")
+
+    result = await transform_image(
+        prompt="oil painting style", base_image_path=str(base),
+        output_path=out, return_base64=True,
+    )
+    assert result["success"] is True
+    assert result["results"][0]["base64"] == FAKE_B64
+    assert result["results"][0]["path"] == out
+    # Verify payload: parts must include inlineData first, then text
+    call_args = mock_gen.call_args
+    contents = call_args[0][1]
+    parts = contents[0]["parts"]
+    assert parts[0]["inlineData"]["data"] == FAKE_B64
+    assert parts[-1]["text"] == "oil painting style"
+
+
+@pytest.mark.asyncio
+@patch("vertex_ai_tools._gemini_generate_content")
+async def test_transform_image_with_additional_refs(mock_gen, tmp_path):
+    mock_gen.return_value = {
+        "candidates": [{"content": {"parts": [{"inlineData": {"data": FAKE_B64}}]}}]
+    }
+    base = tmp_path / "base.png"; base.write_bytes(FAKE_PNG)
+    ref = tmp_path / "ref.png"; ref.write_bytes(FAKE_PNG)
+
+    result = await transform_image(
+        prompt="match this style", base_image_path=str(base),
+        additional_image_paths=[str(ref)],
+    )
+    assert result["success"] is True
+    parts = mock_gen.call_args[0][1][0]["parts"]
+    # base + extra + text = 3 parts
+    assert len(parts) == 3
+    assert "inlineData" in parts[1]
+
+
+@pytest.mark.asyncio
+async def test_transform_image_base_not_found():
+    result = await transform_image(prompt="x", base_image_path="nope.png")
+    assert result["success"] is False
+    assert result["error"]["code"] == "VALIDATION"
+
+
+@pytest.mark.asyncio
+@patch("vertex_ai_tools._gemini_generate_content")
+async def test_transform_image_no_image_in_response(mock_gen, tmp_path):
+    mock_gen.return_value = {"candidates": [{"content": {"parts": [{"text": "sorry, refused"}]}}]}
+    base = tmp_path / "base.png"; base.write_bytes(FAKE_PNG)
+    result = await transform_image(prompt="x", base_image_path=str(base))
+    assert result["success"] is False
+    assert "no image" in result["error"]["message"].lower()
+
+
+# ---- _handle_vertex_http_error ----------------------------------------------
+
+def test_handle_http_error_404_includes_hint():
+    err = _handle_vertex_http_error(
+        _http_error(404, '{"error":{"message":"Publisher Model not found"}}'),
+        "gemini-9.9-fake", ":generateContent", 0.4,
+    )
+    assert err["code"] == 404
+    assert err["model"] == "gemini-9.9-fake"
+    assert "not found" in err["hint"].lower()
+    assert err["docs_url"].startswith("https://")
+
+
+def test_handle_http_error_401_says_reauth():
+    err = _handle_vertex_http_error(_http_error(401, "{}"), "imagen-4.0-generate-001", ":predict", 0.1)
+    assert err["code"] == 401
+    assert "application-default login" in err["hint"]
+
+
+def test_handle_http_error_403_says_iam():
+    err = _handle_vertex_http_error(_http_error(403, "{}"), "imagen-4.0-generate-001", ":predict", 0.1)
+    assert err["code"] == 403
+    assert "aiplatform" in err["hint"].lower()
+
+
+def test_handle_http_error_429_includes_retry_after():
+    err = _handle_vertex_http_error(_http_error(429, "{}", headers={"Retry-After": "30"}),
+                                     "gemini-2.5-flash", ":generateContent", 0.1)
+    assert err["code"] == 429
+    assert "Retry after 30" in err["hint"]
+
+
+def test_handle_http_error_500_retryable():
+    err = _handle_vertex_http_error(_http_error(503, "{}"), "imagen-4.0-generate-001", ":predict", 0.1)
+    assert err["code"] == 503
+    assert "retry" in err["hint"].lower()
+
+
+def test_validation_error_structure():
+    err = _build_validation_error("bad input")
+    assert err["code"] == "VALIDATION"
+    assert err["message"] == "bad input"
+
+
+# ---- analyze / upscale / remove_background (regression) --------------------
 
 @pytest.mark.asyncio
 @patch("vertex_ai_tools.GenerativeModel")
 async def test_analyze_image_success(mock_gen_model, tmp_path):
-    img_path = tmp_path / "test.jpg"
-    img_path.write_bytes(b"fake-data")
+    img_path = tmp_path / "test.jpg"; img_path.write_bytes(b"fake-data")
     mock_instance = MagicMock()
-    mock_response = MagicMock()
-    mock_response.text = "This is a cat."
+    mock_response = MagicMock(); mock_response.text = "This is a cat."
     mock_instance.generate_content_async = AsyncMock(return_value=mock_response)
     mock_gen_model.return_value = mock_instance
 
@@ -83,40 +318,17 @@ async def test_analyze_image_success(mock_gen_model, tmp_path):
 async def test_analyze_image_file_not_found():
     result = await analyze_image(prompt="test", image_path="non_existent.jpg")
     assert result["success"] is False
-    assert "not found" in result["error"]
-
-
-@pytest.mark.asyncio
-@patch("vertex_ai_tools._imagen_predict")
-async def test_edit_image_success(mock_predict, tmp_path):
-    mock_predict.return_value = {"predictions": [{"bytesBase64Encoded": FAKE_B64}]}
-    base = tmp_path / "base.png"
-    base.write_bytes(FAKE_PNG)
-    out = str(tmp_path / "edited.png")
-
-    result = await edit_image(
-        prompt="add a hat",
-        base_image_path=str(base),
-        output_path=out,
-        model_name="imagen-3.0-generate-002",
-        return_base64=True,
-    )
-    assert result["success"] is True
-    assert "base64" in result["results"][0]
+    assert result["error"]["code"] == "VALIDATION"
 
 
 @pytest.mark.asyncio
 @patch("vertex_ai_tools._imagen_predict")
 async def test_upscale_image_success(mock_predict, tmp_path):
     mock_predict.return_value = {"predictions": [{"bytesBase64Encoded": FAKE_B64}]}
-    base = tmp_path / "low.png"
-    base.write_bytes(FAKE_PNG)
-
-    result = await upscale_image(
-        base_image_path=str(base),
-        model_name="imagen-3.0-generate-002",
-        return_base64=True,
-    )
+    base = tmp_path / "low.png"; base.write_bytes(FAKE_PNG)
+    result = await upscale_image(base_image_path=str(base),
+                                  model_name="imagen-3.0-generate-002",
+                                  return_base64=True)
     assert result["success"] is True
 
 
@@ -124,12 +336,16 @@ async def test_upscale_image_success(mock_predict, tmp_path):
 @patch("vertex_ai_tools._imagen_predict")
 async def test_remove_background_success(mock_predict, tmp_path):
     mock_predict.return_value = {"predictions": [{"bytesBase64Encoded": FAKE_B64}]}
-    base = tmp_path / "subj.png"
-    base.write_bytes(FAKE_PNG)
-
-    result = await remove_background(
-        base_image_path=str(base),
-        model_name="imagen-3.0-generate-002",
-        return_base64=True,
-    )
+    base = tmp_path / "subj.png"; base.write_bytes(FAKE_PNG)
+    result = await remove_background(base_image_path=str(base),
+                                      model_name="imagen-3.0-generate-002",
+                                      return_base64=True)
     assert result["success"] is True
+
+
+# ---- constants --------------------------------------------------------------
+
+def test_supported_edit_modes_includes_defaults():
+    assert "EDIT_MODE_DEFAULT" in SUPPORTED_EDIT_MODES
+    assert "EDIT_MODE_INPAINT_INSERTION" in SUPPORTED_EDIT_MODES
+    assert "EDIT_MODE_OUTPAINT" in SUPPORTED_EDIT_MODES

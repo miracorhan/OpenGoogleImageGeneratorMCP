@@ -9,9 +9,14 @@ from google.oauth2 import credentials as oauth2_credentials
 from google.auth.impersonated_credentials import Credentials as ImpersonatedCredentials
 
 import vertexai
-from vertex_ai_tools import generate_image, edit_image, analyze_image, upscale_image, remove_background, generate_video
+from vertex_ai_tools import (
+    generate_image, edit_image, transform_image, analyze_image,
+    upscale_image, remove_background, generate_video,
+    probe_available_models, get_cached_availability,
+    SUPPORTED_EDIT_MODES,
+)
 from config import PROJECT_ID, LOCATION, DEFAULT_OUTPUT_DIR, GOOGLE_ACCESS_TOKEN, IMPERSONATE_SERVICE_ACCOUNT, logger
-from discovery import get_recommended_models, list_vertex_publisher_models
+from discovery import get_recommended_models
 
 # Initialize the MCP Server
 mcp = FastMCP("Vertex AI 2026 Server")
@@ -36,24 +41,34 @@ if PROJECT_ID:
 else:
     logger.warning("GOOGLE_CLOUD_PROJECT not set. Vertex AI calls may fail.")
 
-# Cache for dynamic models
-_publisher_models_cache = []
-
 @mcp.tool()
-async def tool_list_available_models() -> dict:
+async def tool_list_available_models(force_refresh: bool = False) -> dict:
     """
-    Dynamically fetch and list available Vertex AI models.
+    Live-probe every candidate Vertex AI publisher model in this project/location
+    and return only those that respond (HTTP 200 or 400 = reachable; 404 = not
+    found and excluded). Results are cached for the server process lifetime;
+    pass force_refresh=true to rescan.
+
+    Returns:
+      {
+        "available": { "image_generation": [...], "image_transformation": [...],
+                        "text": [...], "vision": [...] },
+        "recommended": <static list, may include models that 404 in this project>,
+        "checked_at": <ISO timestamp>,
+        "project": ..., "location": ...
+      }
     """
-    global _publisher_models_cache
-    if not _publisher_models_cache:
-        # Fetching takes time, maybe do it async or just once
-        if PROJECT_ID:
-            logger.info("Fetching publisher models from Vertex AI...")
-            _publisher_models_cache = await asyncio.to_thread(list_vertex_publisher_models, PROJECT_ID, LOCATION)
-            
+    import time as _t
+    t0 = _t.time()
+    available = await asyncio.to_thread(probe_available_models, force_refresh)
+    cached = get_cached_availability()
     return {
+        "available": available,
         "recommended": get_recommended_models(),
-        "all_publishers": _publisher_models_cache if _publisher_models_cache else "Failed to fetch or empty."
+        "checked_at": cached.get("checked_at"),
+        "project": PROJECT_ID,
+        "location": LOCATION,
+        "duration_s": round(_t.time() - t0, 2),
     }
 
 class GenerateImageParams(BaseModel):
@@ -88,31 +103,91 @@ async def tool_generate_image(params: GenerateImageParams) -> dict:
     )
 
 class EditImageParams(BaseModel):
-    prompt: str = Field(..., description="The text description of the edits to apply.")
-    base_image_path: str = Field(..., description="The path to the original image.")
-    output_filename: str = Field(..., description="The name of the file to save the edited image as.")
-    model_name: str = Field(
-        "imagen-3.0-generate-002",
+    prompt: str = Field(..., description="Text description of the edits to apply.")
+    base_image_path: str = Field(..., description="Absolute or relative path to the source image.")
+    output_filename: str = Field(..., description="Name of the file to save the edited image as.")
+    mask_image_path: Optional[str] = Field(
+        None,
         description=(
-            "Image editing model. "
-            "GA: imagen-3.0-generate-002 (default, supports edit_image API), "
-            "imagen-4.0-generate-001 (quality), imagen-4.0-fast-generate-001 (fast)."
+            "Optional path to a mask image (PNG; white = edit region, black = preserve). "
+            "Required when edit_mode is EDIT_MODE_INPAINT_INSERTION, "
+            "EDIT_MODE_INPAINT_REMOVAL, or EDIT_MODE_OUTPAINT."
         ),
     )
-    return_base64: bool = Field(False, description="Whether to return the base64 encoded image.")
+    edit_mode: str = Field(
+        "EDIT_MODE_DEFAULT",
+        description=(
+            "Edit mode: EDIT_MODE_DEFAULT (mask-free, prompt-driven full image edit), "
+            "EDIT_MODE_INPAINT_INSERTION (mask required), EDIT_MODE_INPAINT_REMOVAL (mask required), "
+            "EDIT_MODE_OUTPAINT (mask required), EDIT_MODE_BGSWAP, EDIT_MODE_PRODUCT_IMAGE."
+        ),
+    )
+    model_name: str = Field(
+        "imagen-3.0-capability-001",
+        description=(
+            "Image edit model. Default: imagen-3.0-capability-001 (full mask + edit-mode support). "
+            "Fallback: imagen-3.0-generate-002 (legacy schema, no mask, EDIT_MODE_DEFAULT only)."
+        ),
+    )
+    negative_prompt: Optional[str] = Field(None, description="Optional negative prompt.")
+    sample_count: int = Field(1, ge=1, le=4, description="Number of edited samples to generate.")
+    return_base64: bool = Field(False, description="Whether to return the base64-encoded image.")
 
 @mcp.tool()
 async def tool_edit_image(params: EditImageParams) -> dict:
     """
-    Edit an existing image based on a text prompt using Vertex AI.
+    Precision image editing via Imagen 3 Capability — mask-based inpaint/outpaint,
+    background swap, product image, or mask-free prompt-driven edit.
+    For free-form natural-language transforms (style transfer, scene rewriting),
+    use tool_transform_image instead.
     """
     output_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
     return await edit_image(
         prompt=params.prompt,
         base_image_path=params.base_image_path,
         output_path=output_path,
+        mask_image_path=params.mask_image_path,
+        edit_mode=params.edit_mode,
         model_name=params.model_name,
-        return_base64=params.return_base64
+        negative_prompt=params.negative_prompt,
+        sample_count=params.sample_count,
+        return_base64=params.return_base64,
+    )
+
+
+class TransformImageParams(BaseModel):
+    prompt: str = Field(..., description="Natural-language transformation instruction.")
+    base_image_path: str = Field(..., description="Path to the primary input image.")
+    output_filename: str = Field(..., description="Name of the file to save the transformed image as.")
+    additional_image_paths: Optional[List[str]] = Field(
+        None,
+        description="Optional list of additional reference image paths (e.g. style refs).",
+    )
+    model_name: str = Field(
+        "gemini-2.5-flash-image",
+        description=(
+            "Vertex AI Gemini image model. Verified available: gemini-2.5-flash-image. "
+            "Newer variants (gemini-3.1-flash-image, gemini-3-pro-image) may exist in other "
+            "projects/regions — check tool_list_available_models for the live list."
+        ),
+    )
+    return_base64: bool = Field(False, description="Whether to return the base64-encoded image.")
+
+@mcp.tool()
+async def tool_transform_image(params: TransformImageParams) -> dict:
+    """
+    Free-form 'image + text -> image' transformation via Gemini multimodal models.
+    Use for style transfer, scene rewriting, or any natural-language image edit
+    that does not require pixel-precise masking.
+    """
+    output_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    return await transform_image(
+        prompt=params.prompt,
+        base_image_path=params.base_image_path,
+        output_path=output_path,
+        additional_image_paths=params.additional_image_paths,
+        model_name=params.model_name,
+        return_base64=params.return_base64,
     )
 
 class AnalyzeImageParams(BaseModel):
