@@ -151,7 +151,9 @@ async def tool_generate_image(params: GenerateImageParams) -> dict:
 class EditImageParams(BaseModel):
     prompt: str = Field(..., description="Text description of the edits to apply.")
     base_image_path: str = Field(..., description="Absolute or relative path to the source image.")
-    output_filename: str = Field(..., description="Name of the file to save the edited image as.")
+    output_filename: Optional[str] = Field(None, description="Name of the file to save the edited image as.")
+    output_path: Optional[str] = Field(None, description="Absolute path for the output file. Takes priority over output_filename.")
+    model_tier: Optional[str] = Field(None, description="Shorthand tier: fast / quality. Overrides model_name.")
     mask_image_path: Optional[str] = Field(
         None,
         description=(
@@ -187,14 +189,29 @@ async def tool_edit_image(params: EditImageParams) -> dict:
     For free-form natural-language transforms (style transfer, scene rewriting),
     use tool_transform_image instead.
     """
-    output_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    from model_registry import resolve_model
+
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
+
+    resolved_model = params.model_name
+    if params.model_tier:
+        resolved_model, _ = resolve_model(params.model_tier, "transform")
+
     return await edit_image(
         prompt=params.prompt,
         base_image_path=params.base_image_path,
-        output_path=output_path,
+        output_path=final_path,
         mask_image_path=params.mask_image_path,
         edit_mode=params.edit_mode,
-        model_name=params.model_name,
+        model_name=resolved_model,
         negative_prompt=params.negative_prompt,
         sample_count=params.sample_count,
         return_base64=params.return_base64,
@@ -204,7 +221,9 @@ async def tool_edit_image(params: EditImageParams) -> dict:
 class TransformImageParams(BaseModel):
     prompt: str = Field(..., description="Natural-language transformation instruction.")
     base_image_path: str = Field(..., description="Path to the primary input image.")
-    output_filename: str = Field(..., description="Name of the file to save the transformed image as.")
+    output_filename: Optional[str] = Field(None, description="Name of the file to save the transformed image as.")
+    output_path: Optional[str] = Field(None, description="Absolute path for the output file. Takes priority over output_filename.")
+    model_tier: Optional[str] = Field(None, description="Shorthand tier: fast / quality. Overrides model_name.")
     additional_image_paths: Optional[List[str]] = Field(
         None,
         description="Optional list of additional reference image paths (e.g. style refs).",
@@ -226,13 +245,28 @@ async def tool_transform_image(params: TransformImageParams) -> dict:
     Use for style transfer, scene rewriting, or any natural-language image edit
     that does not require pixel-precise masking.
     """
-    output_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    from model_registry import resolve_model
+
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
+
+    resolved_model = params.model_name
+    if params.model_tier:
+        resolved_model, _ = resolve_model(params.model_tier, "transform")
+
     return await transform_image(
         prompt=params.prompt,
         base_image_path=params.base_image_path,
-        output_path=output_path,
+        output_path=final_path,
         additional_image_paths=params.additional_image_paths,
-        model_name=params.model_name,
+        model_name=resolved_model,
         return_base64=params.return_base64,
     )
 
@@ -264,7 +298,8 @@ async def tool_analyze_image(params: AnalyzeImageParams) -> dict:
 
 class UpscaleImageParams(BaseModel):
     base_image_path: str = Field(..., description="The path to the image to upscale.")
-    output_filename: str = Field(..., description="The name of the file to save the upscaled image as.")
+    output_filename: Optional[str] = Field(None, description="The name of the file to save the upscaled image as.")
+    output_path: Optional[str] = Field(None, description="Absolute path for the output file. Takes priority over output_filename.")
     model_name: str = Field(
         "imagen-3.0-generate-002",
         description="Model to use. GA: imagen-3.0-generate-002 (default). Other Imagen variants supported.",
@@ -276,17 +311,27 @@ async def tool_upscale_image(params: UpscaleImageParams) -> dict:
     """
     Upscale a low resolution image.
     """
-    output_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
+
     return await upscale_image(
         base_image_path=params.base_image_path,
-        output_path=output_path,
+        output_path=final_path,
         model_name=params.model_name,
         return_base64=params.return_base64
     )
 
 class RemoveBackgroundParams(BaseModel):
     base_image_path: str = Field(..., description="The path to the image to process.")
-    output_filename: str = Field(..., description="The name of the file to save the background-removed image as.")
+    output_filename: Optional[str] = Field(None, description="The name of the file to save the background-removed image as.")
+    output_path: Optional[str] = Field(None, description="Absolute path for the output file. Takes priority over output_filename.")
     model_name: str = Field(
         "imagen-3.0-capability-001",
         description="Model to use. imagen-3.0-capability-001 (default, required for BGSWAP). Do not use imagen-3.0-generate-002 for background removal.",
@@ -298,10 +343,19 @@ async def tool_remove_background(params: RemoveBackgroundParams) -> dict:
     """
     Remove background from an image.
     """
-    output_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
+
     return await remove_background(
         base_image_path=params.base_image_path,
-        output_path=output_path,
+        output_path=final_path,
         model_name=params.model_name,
         return_base64=params.return_base64
     )
