@@ -1,11 +1,11 @@
 # Developer: Mirac Orhan (mirac.orhan@gmail.com)
 # License: Open Source (MIT License)
-from typing import Tuple
+from typing import Dict, Tuple
 
 VALID_TIERS = ("fast", "balanced", "quality", "ultra")
 VALID_TOOL_TYPES = ("generate", "transform", "video")
 
-_TIER_MAP: dict = {
+_TIER_MAP: Dict[str, Dict[str, Tuple[str, str]]] = {
     "generate": {
         "fast":     ("imagen-4.0-fast-generate-001",  "imagen"),
         "balanced": ("gemini-2.5-flash-image",         "gemini"),
@@ -25,6 +25,10 @@ _TIER_MAP: dict = {
         "ultra":    ("veo-3.1-generate-001",      "veo"),
     },
 }
+
+assert set(VALID_TOOL_TYPES) == set(_TIER_MAP), "VALID_TOOL_TYPES out of sync with _TIER_MAP"
+assert all(set(VALID_TIERS) == set(tier_map) for tier_map in _TIER_MAP.values()), \
+    "VALID_TIERS out of sync with _TIER_MAP"
 
 
 def resolve_model(tier: str, tool_type: str) -> Tuple[str, str]:
