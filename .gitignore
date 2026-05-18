@@ -7,6 +7,7 @@
 .env.*
 *.env
 *.env.*
+!.env.example
 *.key
 *.pem
 *credential*.json
@@ -68,5 +69,4 @@ logs/
 outputs/
 .claude/
 .gemini/
-help.txt
 CLAUDE.md

@@ -19,7 +19,7 @@ from config import PROJECT_ID, LOCATION, DEFAULT_OUTPUT_DIR, GOOGLE_ACCESS_TOKEN
 from discovery import get_recommended_models
 
 # Initialize the MCP Server
-mcp = FastMCP("Vertex AI 2026 Server")
+mcp = FastMCP("GoogleImageGenerator")
 
 # Initialize Vertex AI
 if PROJECT_ID:

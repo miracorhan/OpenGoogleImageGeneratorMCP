@@ -1,4 +1,4 @@
-# Google Image Generator MCP (Vertex AI 2026 Server)
+# GoogleImageGenerator MCP
 
 This project is a Model Context Protocol (MCP) server that exposes Google Cloud Vertex AI capabilities—specifically Imagen 3 and Gemini Vision models—to MCP-compatible clients. It is built using the `FastMCP` framework.
 
@@ -144,7 +144,7 @@ To use this server, you need to configure your MCP client (such as Claude Deskto
 ```json
 {
   "mcpServers": {
-    "vertex-ai-images": {
+    "GoogleImageGenerator": {
       "command": "python",
       "args": [
         "/absolute/path/to/your/GoogleImageGeneratorMCP/mcp_server.py"
