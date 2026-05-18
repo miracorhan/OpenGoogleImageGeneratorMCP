@@ -41,3 +41,27 @@ def resolve_model(tier: str, tool_type: str) -> Tuple[str, str]:
         raise ValueError(f"Unknown tool_type '{tool_type}'. Valid: {list(_TIER_MAP)}")
     tool_map = _TIER_MAP[tool_type]
     return tool_map.get(tier, tool_map["fast"])
+
+
+# ---------------------------------------------------------------------------
+# Google GenAI SDK model constants
+# Not part of the 4-tier Vertex AI system — used by genai_tools.py
+# ---------------------------------------------------------------------------
+
+EMBED_MODEL_VERTEX = "text-embedding-004"
+EMBED_MODEL_GEMINI_API = "gemini-embedding-2"
+
+SPEECH_MODELS = {
+    "fast": "gemini-2.5-flash-preview-tts",
+    "quality": "gemini-2.5-pro-preview-tts",
+}
+
+VIDEO_ANALYZE_MODELS = {
+    "fast": "gemini-2.5-flash",
+    "quality": "gemini-3.1-pro",
+}
+
+LIVE_MODELS = {
+    "fast": "gemini-2.5-flash",
+    "quality": "gemini-3.1-pro",
+}

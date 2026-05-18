@@ -60,3 +60,33 @@ def test_valid_tool_types_constant():
     assert "generate" in VALID_TOOL_TYPES
     assert "transform" in VALID_TOOL_TYPES
     assert "video" in VALID_TOOL_TYPES
+
+
+def test_embed_model_vertex_is_defined():
+    from model_registry import EMBED_MODEL_VERTEX
+    assert EMBED_MODEL_VERTEX == "text-embedding-004"
+
+
+def test_embed_model_gemini_api_is_defined():
+    from model_registry import EMBED_MODEL_GEMINI_API
+    assert EMBED_MODEL_GEMINI_API == "gemini-embedding-2"
+
+
+def test_speech_models_has_fast_and_quality():
+    from model_registry import SPEECH_MODELS
+    assert "fast" in SPEECH_MODELS
+    assert "quality" in SPEECH_MODELS
+    assert "tts" in SPEECH_MODELS["fast"]
+    assert "tts" in SPEECH_MODELS["quality"]
+
+
+def test_video_analyze_models_has_fast_and_quality():
+    from model_registry import VIDEO_ANALYZE_MODELS
+    assert "fast" in VIDEO_ANALYZE_MODELS
+    assert "quality" in VIDEO_ANALYZE_MODELS
+
+
+def test_live_models_has_fast_and_quality():
+    from model_registry import LIVE_MODELS
+    assert "fast" in LIVE_MODELS
+    assert "quality" in LIVE_MODELS

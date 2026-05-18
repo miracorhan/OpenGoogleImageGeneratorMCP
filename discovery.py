@@ -59,4 +59,16 @@ def get_recommended_models():
             "veo-3.0-generate-001",
             "veo-2.0-generate-001",
         ],
+        "embedding": [
+            "text-embedding-004",
+            "gemini-embedding-2",
+        ],
+        "speech": [
+            "gemini-2.5-flash-preview-tts",
+            "gemini-2.5-pro-preview-tts",
+        ],
+        "live_text": [
+            "gemini-2.5-flash",
+            "gemini-3.1-pro",
+        ],
     }
