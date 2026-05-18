@@ -15,7 +15,9 @@ import vertexai
 from vertex_ai_tools import (
     generate_image, edit_image, transform_image, analyze_image,
     upscale_image, remove_background, generate_video,
+    gemini_generate_image,
     probe_available_models, get_cached_availability,
+    _validate_output_path,
     SUPPORTED_EDIT_MODES,
 )
 from config import PROJECT_ID, LOCATION, DEFAULT_OUTPUT_DIR, GOOGLE_ACCESS_TOKEN, IMPERSONATE_SERVICE_ACCOUNT, logger, check_for_updates, __version__
@@ -76,33 +78,71 @@ async def tool_list_available_models(force_refresh: bool = False) -> dict:
 
 class GenerateImageParams(BaseModel):
     prompt: str = Field(..., description="The text description of the image to generate.")
-    output_filename: str = Field(..., description="The name of the file to save the image as (e.g. image.png).")
+    output_filename: Optional[str] = Field(None, description="Filename to save the image as (e.g. image.png). Required if output_path not given.")
+    output_path: Optional[str] = Field(None, description="Absolute path for the output file (e.g. C:/outputs/image.png). Takes priority over output_filename.")
     model_name: str = Field(
         "imagen-4.0-fast-generate-001",
-        description=(
-            "Image generation model to use. "
-            "GA: imagen-4.0-fast-generate-001 (fast/cheap, default), "
-            "imagen-4.0-generate-001 (higher quality), "
-            "imagen-3.0-generate-002 (stable fallback)."
-        ),
+        description="Imagen model. GA: imagen-4.0-fast-generate-001 (fast, default), imagen-4.0-generate-001 (quality), imagen-4.0-ultra-generate-001 (ultra), imagen-3.0-generate-002 (stable).",
     )
+    model_tier: Optional[str] = Field(None, description="Shorthand tier: fast / balanced / quality / ultra. Overrides model_name when set. balanced routes to gemini-2.5-flash-image.")
     number_of_images: int = Field(1, ge=1, le=4, description="Number of images to generate.")
     aspect_ratio: str = Field("1:1", description="Aspect ratio (e.g., 1:1, 16:9, 4:3, 9:16).")
     return_base64: bool = Field(False, description="Whether to return the base64 encoded image.")
+    negative_prompt: Optional[str] = Field(None, description="Elements to exclude from the image.")
+    seed: Optional[int] = Field(None, description="Seed for deterministic output. Requires add_watermark=False.")
+    enhance_prompt: bool = Field(True, description="Use LLM-based prompt rewriting for better results.")
+    add_watermark: bool = Field(True, description="Add SynthID digital watermark. Must be False when seed is set.")
+    safety_setting: str = Field("block_medium_and_above", description="Safety filter: block_low_and_above / block_medium_and_above / block_only_high.")
+    person_generation: str = Field("allow_adult", description="Person generation policy: allow_all / allow_adult / dont_allow.")
+    output_format: str = Field("PNG", description="Output format: PNG or JPEG.")
+    compression_quality: int = Field(85, ge=0, le=100, description="JPEG compression quality (0-100). Only applies when output_format=JPEG.")
+    storage_uri: Optional[str] = Field(None, description="Cloud Storage destination (e.g. gs://bucket/path/). Image is written directly to GCS.")
 
 @mcp.tool()
 async def tool_generate_image(params: GenerateImageParams) -> dict:
     """
-    Generate an image from a text prompt using Vertex AI.
+    Generate an image from a text prompt using Vertex AI Imagen or Gemini.
+    Use model_tier for simple model selection: fast/balanced/quality/ultra.
+    balanced routes to gemini-2.5-flash-image (Gemini API path).
     """
-    output_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    from model_registry import resolve_model
+
+    if params.output_path:
+        final_path = _validate_output_path(params.output_path)
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        return {"success": False, "error": "Provide output_filename or output_path."}
+
+    resolved_model = params.model_name
+    api_backend = "imagen"
+    if params.model_tier:
+        resolved_model, api_backend = resolve_model(params.model_tier, "generate")
+
+    if api_backend == "gemini":
+        return await gemini_generate_image(
+            prompt=params.prompt,
+            output_path=final_path,
+            model_name=resolved_model,
+            return_base64=params.return_base64,
+        )
+
     return await generate_image(
         prompt=params.prompt,
-        output_path=output_path,
-        model_name=params.model_name,
+        output_path=final_path,
+        model_name=resolved_model,
         number_of_images=params.number_of_images,
         aspect_ratio=params.aspect_ratio,
-        return_base64=params.return_base64
+        return_base64=params.return_base64,
+        negative_prompt=params.negative_prompt,
+        seed=params.seed,
+        enhance_prompt=params.enhance_prompt,
+        add_watermark=params.add_watermark,
+        safety_setting=params.safety_setting,
+        person_generation=params.person_generation,
+        output_format=params.output_format,
+        compression_quality=params.compression_quality,
+        storage_uri=params.storage_uri,
     )
 
 class EditImageParams(BaseModel):
@@ -245,8 +285,8 @@ class RemoveBackgroundParams(BaseModel):
     base_image_path: str = Field(..., description="The path to the image to process.")
     output_filename: str = Field(..., description="The name of the file to save the background-removed image as.")
     model_name: str = Field(
-        "imagen-3.0-generate-002",
-        description="Model to use. GA: imagen-3.0-generate-002 (default). Other Imagen variants supported.",
+        "imagen-3.0-capability-001",
+        description="Model to use. imagen-3.0-capability-001 (default, required for BGSWAP). Do not use imagen-3.0-generate-002 for background removal.",
     )
     return_base64: bool = Field(False, description="Whether to return the base64 encoded image.")
 

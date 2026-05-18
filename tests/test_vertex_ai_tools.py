@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 
 import pytest
 
+import vertex_ai_tools
 from vertex_ai_tools import (
     generate_image, edit_image, transform_image, analyze_image,
     upscale_image, remove_background,
@@ -381,3 +382,74 @@ def test_validate_output_path_rejects_dotdot():
 def test_validate_output_path_rejects_dotdot_backslash():
     with pytest.raises(ValueError, match=r"\.\."):
         _validate_output_path("C:\\outputs\\..\\secret\\file.png")
+
+
+# ---- generate_image expanded params (Task 3) --------------------------------
+
+@pytest.mark.asyncio
+async def test_generate_image_passes_seed_to_payload():
+    captured = {}
+    def fake_predict(model_name, payload):
+        captured["payload"] = payload
+        return {"predictions": [{"bytesBase64Encoded": "iVBORw0KGgo="}]}
+
+    with patch("vertex_ai_tools._imagen_predict", side_effect=fake_predict):
+        result = await vertex_ai_tools.generate_image(
+            prompt="test",
+            seed=42,
+            add_watermark=False,
+        )
+    assert captured["payload"]["parameters"]["seed"] == 42
+    assert captured["payload"]["parameters"]["addWatermark"] is False
+
+@pytest.mark.asyncio
+async def test_generate_image_passes_negative_prompt():
+    captured = {}
+    def fake_predict(model_name, payload):
+        captured["payload"] = payload
+        return {"predictions": [{"bytesBase64Encoded": "iVBORw0KGgo="}]}
+
+    with patch("vertex_ai_tools._imagen_predict", side_effect=fake_predict):
+        await vertex_ai_tools.generate_image(prompt="test", negative_prompt="blurry")
+    assert captured["payload"]["parameters"]["negativePrompt"] == "blurry"
+
+@pytest.mark.asyncio
+async def test_generate_image_enhance_prompt_default_true():
+    captured = {}
+    def fake_predict(model_name, payload):
+        captured["payload"] = payload
+        return {"predictions": [{"bytesBase64Encoded": "iVBORw0KGgo="}]}
+
+    with patch("vertex_ai_tools._imagen_predict", side_effect=fake_predict):
+        await vertex_ai_tools.generate_image(prompt="test")
+    assert captured["payload"]["parameters"]["enhancePrompt"] is True
+
+
+# ---- gemini_generate_image (Task 4) ----------------------------------------
+
+@pytest.mark.asyncio
+async def test_gemini_generate_image_returns_success():
+    fake_response = {
+        "candidates": [{
+            "content": {
+                "parts": [{"inlineData": {"data": "iVBORw0KGgo=", "mimeType": "image/png"}}]
+            }
+        }]
+    }
+    with patch("vertex_ai_tools._gemini_generate_content", return_value=fake_response):
+        result = await vertex_ai_tools.gemini_generate_image(
+            prompt="a red apple",
+            model_name="gemini-2.5-flash-image",
+        )
+    assert result["success"] is True
+    assert "results" in result
+
+@pytest.mark.asyncio
+async def test_gemini_generate_image_no_image_returns_failure():
+    fake_response = {"candidates": [{"content": {"parts": [{"text": "I cannot generate images"}]}}]}
+    with patch("vertex_ai_tools._gemini_generate_content", return_value=fake_response):
+        result = await vertex_ai_tools.gemini_generate_image(
+            prompt="test",
+            model_name="gemini-2.5-flash-image",
+        )
+    assert result["success"] is False

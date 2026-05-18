@@ -496,17 +496,48 @@ async def generate_image(
     number_of_images: int = 1,
     aspect_ratio: str = "1:1",
     return_base64: bool = False,
+    negative_prompt: Optional[str] = None,
+    seed: Optional[int] = None,
+    enhance_prompt: bool = True,
+    add_watermark: bool = True,
+    safety_setting: str = "block_medium_and_above",
+    person_generation: str = "allow_adult",
+    output_format: str = "PNG",
+    compression_quality: int = 85,
+    storage_uri: Optional[str] = None,
 ) -> Dict[str, Any]:
     t0 = time.time()
-    logger.info(f"[generate_image] START | model={model_name} | prompt='{prompt[:80]}...' | aspect={aspect_ratio} | n={number_of_images}")
+    logger.info(
+        f"[generate_image] START | model={model_name} | prompt='{prompt[:80]}' | "
+        f"aspect={aspect_ratio} | n={number_of_images}"
+    )
 
     if not _is_imagen_model(model_name):
         return {"success": False, "error": _build_validation_error(_unsupported_image_model_error(model_name))}
 
     try:
+        parameters: Dict[str, Any] = {
+            "sampleCount": number_of_images,
+            "aspectRatio": aspect_ratio,
+            "enhancePrompt": enhance_prompt,
+            "addWatermark": add_watermark,
+            "safetySetting": safety_setting,
+            "personGeneration": person_generation,
+            "outputOptions": {
+                "mimeType": f"image/{output_format.lower()}",
+                "compressionQuality": compression_quality,
+            },
+        }
+        if negative_prompt:
+            parameters["negativePrompt"] = negative_prompt
+        if seed is not None:
+            parameters["seed"] = seed
+        if storage_uri:
+            parameters["storageUri"] = storage_uri
+
         payload = {
             "instances": [{"prompt": prompt}],
-            "parameters": {"sampleCount": number_of_images, "aspectRatio": aspect_ratio},
+            "parameters": parameters,
         }
         response = await _to_thread(_imagen_predict, model_name, payload, timeout=API_TIMEOUT)
         images = _extract_image_bytes_list(response)
@@ -540,6 +571,56 @@ async def generate_image(
         return {"success": False, "error": _build_timeout_error(model_name, ":predict", time.time() - t0)}
     except Exception as e:
         return {"success": False, "error": _build_unexpected_error(model_name, ":predict", e, time.time() - t0)}
+
+
+async def gemini_generate_image(
+    prompt: str,
+    output_path: Optional[str] = None,
+    model_name: str = "gemini-2.5-flash-image",
+    return_base64: bool = False,
+) -> Dict[str, Any]:
+    """Text-to-image generation via Gemini multimodal models (no input image required).
+    Used when model_tier='balanced' or a gemini-*-image model is specified directly.
+    """
+    t0 = time.time()
+    logger.info(f"[gemini_generate_image] START | model={model_name} | prompt='{prompt[:80]}'")
+
+    try:
+        contents = [{"role": "user", "parts": [{"text": prompt}]}]
+        generation_config = {"responseModalities": ["IMAGE", "TEXT"]}
+
+        response = await _to_thread(
+            _gemini_generate_content, model_name, contents, generation_config, timeout=API_TIMEOUT
+        )
+        image_bytes = _extract_gemini_image_bytes(response)
+        if not image_bytes:
+            text_fallback = _extract_gemini_text(response)
+            err_msg = (
+                f"Model returned no image. Text: {text_fallback[:200]!r}"
+                if text_fallback else
+                f"Model returned no image. Response keys: {list(response.keys())}"
+            )
+            return {"success": False, "error": _build_unexpected_error(
+                model_name, ":generateContent", ValueError(err_msg), time.time() - t0
+            )}
+
+        res: Dict[str, Any] = {}
+        if return_base64:
+            res["base64"] = _encode_base64(image_bytes)
+            res["mime_type"] = "image/png"
+        if output_path:
+            _save_image_bytes(image_bytes, output_path)
+            res["path"] = output_path
+
+        logger.info(f"[gemini_generate_image] SUCCESS in {time.time()-t0:.1f}s")
+        return {"success": True, "results": [res]}
+
+    except VertexAPIError as e:
+        return {"success": False, "error": e.error_dict}
+    except asyncio.TimeoutError:
+        return {"success": False, "error": _build_timeout_error(model_name, ":generateContent", time.time() - t0)}
+    except Exception as e:
+        return {"success": False, "error": _build_unexpected_error(model_name, ":generateContent", e, time.time() - t0)}
 
 
 async def edit_image(
