@@ -18,7 +18,7 @@ from vertex_ai_tools import (
     probe_available_models, get_cached_availability,
     SUPPORTED_EDIT_MODES,
 )
-from config import PROJECT_ID, LOCATION, DEFAULT_OUTPUT_DIR, GOOGLE_ACCESS_TOKEN, IMPERSONATE_SERVICE_ACCOUNT, logger
+from config import PROJECT_ID, LOCATION, DEFAULT_OUTPUT_DIR, GOOGLE_ACCESS_TOKEN, IMPERSONATE_SERVICE_ACCOUNT, logger, check_for_updates, __version__
 from discovery import get_recommended_models
 
 # Initialize the MCP Server
@@ -335,5 +335,6 @@ def UI_UX_mockup(app_purpose: str, color_palette: str) -> str:
            "Constraints: Do not include low-contrast elements, ensure the layout is mobile-first, and do not use generic placeholder text like 'Lorem Ipsum'."
 
 if __name__ == "__main__":
-    logger.info("Starting Vertex AI MCP Server...")
+    logger.info(f"Starting OpenGoogleImageGeneratorMCP v{__version__}...")
+    check_for_updates()
     mcp.run()

@@ -6,6 +6,9 @@ import sys
 import logging
 from dotenv import load_dotenv
 
+__version__ = "1.0.0"
+GITHUB_REPO = "miracorhan/OpenGoogleImageGeneratorMCP"
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -34,3 +37,33 @@ IMPERSONATE_SERVICE_ACCOUNT = os.environ.get("IMPERSONATE_SERVICE_ACCOUNT")
 
 # Ensure output directory exists
 os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
+
+
+def check_for_updates() -> None:
+    """Query GitHub releases API and log a warning if a newer version is available."""
+    import urllib.request
+    import json
+
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": f"OpenGoogleImageGeneratorMCP/{__version__}"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+        latest_tag = data.get("tag_name", "").lstrip("v")
+        if not latest_tag:
+            return
+        current = tuple(int(x) for x in __version__.split("."))
+        latest = tuple(int(x) for x in latest_tag.split("."))
+        if latest > current:
+            logger.warning(
+                f"Update available: v{__version__} → v{latest_tag}. "
+                f"Run 'git pull' to update. "
+                f"https://github.com/{GITHUB_REPO}/releases/latest"
+            )
+        else:
+            logger.info(f"OpenGoogleImageGeneratorMCP v{__version__} is up to date.")
+    except Exception:
+        # Network unavailable or no releases published yet — silently skip
+        pass
