@@ -362,9 +362,9 @@ class GenerateVideoParams(BaseModel):
         description="Veo model. GA: veo-3.1-fast-generate-001 (default, low latency), veo-3.1-generate-001 (premium).",
     )
     model_tier: Optional[Literal["fast", "quality"]] = Field(None, description="fast / quality. Overrides model_name.")
-    duration: int = Field(4, description="Video duration in seconds: 4, 6, or 8.")
-    resolution: str = Field("1080p", description="Output resolution: 720p / 1080p / 4k.")
-    aspect_ratio: str = Field("16:9", description="Aspect ratio: 16:9 (landscape) or 9:16 (portrait).")
+    duration: Literal[4, 6, 8] = Field(4, description="Video duration in seconds.")
+    resolution: Literal["720p", "1080p", "4k"] = Field("1080p", description="Output resolution.")
+    aspect_ratio: Literal["16:9", "9:16"] = Field("16:9", description="Aspect ratio: 16:9 (landscape) or 9:16 (portrait).")
     audio_enabled: bool = Field(False, description="Enable audio generation (Veo 3+ only).")
 
 @mcp.tool()
@@ -405,8 +405,8 @@ class ImageToVideoParams(BaseModel):
     last_frame_path: Optional[str] = Field(None, description="Optional image for the last frame (first+last frame mode).")
     model_name: str = Field("veo-3.1-fast-generate-001", description="Veo model to use.")
     model_tier: Optional[Literal["fast", "quality"]] = Field(None, description="fast / quality. Overrides model_name.")
-    duration: int = Field(4, description="Video duration in seconds: 4, 6, or 8.")
-    aspect_ratio: str = Field("16:9", description="Aspect ratio: 16:9 or 9:16.")
+    duration: Literal[4, 6, 8] = Field(4, description="Video duration in seconds.")
+    aspect_ratio: Literal["16:9", "9:16"] = Field("16:9", description="Aspect ratio: 16:9 or 9:16.")
 
 @mcp.tool()
 async def tool_image_to_video(params: ImageToVideoParams) -> dict:
