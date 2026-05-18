@@ -10,6 +10,7 @@ from vertex_ai_tools import (
     upscale_image, remove_background,
     _encode_base64, _save_image_bytes,
     _handle_vertex_http_error, _build_validation_error,
+    _validate_output_path,
     SUPPORTED_EDIT_MODES,
 )
 
@@ -355,19 +356,16 @@ def test_supported_edit_modes_includes_defaults():
 
 def test_validate_output_path_accepts_absolute():
     import os
-    from vertex_ai_tools import _validate_output_path
     abs_path = os.path.abspath("outputs/test.png")
     result = _validate_output_path(abs_path)
     assert result == abs_path
 
 
 def test_validate_output_path_rejects_relative():
-    from vertex_ai_tools import _validate_output_path
     with pytest.raises(ValueError, match="absolute"):
         _validate_output_path("relative/path/file.png")
 
 
 def test_validate_output_path_rejects_dotdot():
-    from vertex_ai_tools import _validate_output_path
     with pytest.raises(ValueError, match="absolute"):
         _validate_output_path("C:/outputs/../secret/file.png")
