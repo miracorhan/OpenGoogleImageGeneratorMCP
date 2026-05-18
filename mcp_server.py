@@ -14,7 +14,7 @@ from google.auth.impersonated_credentials import Credentials as ImpersonatedCred
 import vertexai
 from vertex_ai_tools import (
     generate_image, edit_image, transform_image, analyze_image,
-    upscale_image, remove_background, generate_video,
+    upscale_image, remove_background, generate_video, image_to_video,
     gemini_generate_image,
     probe_available_models, get_cached_availability,
     _validate_output_path,
@@ -355,26 +355,86 @@ async def tool_remove_background(params: RemoveBackgroundParams) -> dict:
 
 class GenerateVideoParams(BaseModel):
     prompt: str = Field(..., description="The text description of the video to generate.")
-    output_filename: str = Field(..., description="The name of the file to save the video as (e.g. video.mp4).")
+    output_filename: Optional[str] = Field(None, description="Output filename (e.g. video.mp4). Required if output_path not given.")
+    output_path: Optional[str] = Field(None, description="Absolute output file path. Takes priority over output_filename.")
     model_name: str = Field(
         "veo-3.1-fast-generate-001",
-        description=(
-            "Video generation model. "
-            "Stable: veo-3.1-fast-generate-001 (default, low latency), "
-            "veo-3.1-generate-001 (premium), veo-3.0-generate-001, veo-2.0-generate-001."
-        ),
+        description="Veo model. GA: veo-3.1-fast-generate-001 (default, low latency), veo-3.1-generate-001 (premium).",
     )
+    model_tier: Optional[Literal["fast", "quality"]] = Field(None, description="fast / quality. Overrides model_name.")
+    duration: int = Field(4, description="Video duration in seconds: 4, 6, or 8.")
+    resolution: str = Field("1080p", description="Output resolution: 720p / 1080p / 4k.")
+    aspect_ratio: str = Field("16:9", description="Aspect ratio: 16:9 (landscape) or 9:16 (portrait).")
+    audio_enabled: bool = Field(False, description="Enable audio generation (Veo 3+ only).")
 
 @mcp.tool()
 async def tool_generate_video(params: GenerateVideoParams) -> dict:
-    """
-    Generate a video from a text prompt.
-    """
-    output_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    """Generate a video from a text prompt using Veo."""
+    from model_registry import resolve_model
+
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
+
+    resolved_model = params.model_name
+    if params.model_tier:
+        resolved_model, _ = resolve_model(params.model_tier, "video")
+
     return await generate_video(
         prompt=params.prompt,
-        output_path=output_path,
-        model_name=params.model_name
+        output_path=final_path,
+        model_name=resolved_model,
+        duration=params.duration,
+        resolution=params.resolution,
+        aspect_ratio=params.aspect_ratio,
+        audio_enabled=params.audio_enabled,
+    )
+
+
+class ImageToVideoParams(BaseModel):
+    first_frame_path: str = Field(..., description="Absolute path to the image used as the first video frame.")
+    prompt: str = Field("", description="Motion or scene description to guide video generation.")
+    output_filename: Optional[str] = Field(None, description="Output filename (e.g. video.mp4). Required if output_path not given.")
+    output_path: Optional[str] = Field(None, description="Absolute output file path. Takes priority over output_filename.")
+    last_frame_path: Optional[str] = Field(None, description="Optional image for the last frame (first+last frame mode).")
+    model_name: str = Field("veo-3.1-fast-generate-001", description="Veo model to use.")
+    model_tier: Optional[Literal["fast", "quality"]] = Field(None, description="fast / quality. Overrides model_name.")
+    duration: int = Field(4, description="Video duration in seconds: 4, 6, or 8.")
+    aspect_ratio: str = Field("16:9", description="Aspect ratio: 16:9 or 9:16.")
+
+@mcp.tool()
+async def tool_image_to_video(params: ImageToVideoParams) -> dict:
+    """Generate a video from a still image as the first frame using Veo."""
+    from model_registry import resolve_model
+
+    if params.output_path:
+        try:
+            final_path = _validate_output_path(params.output_path)
+        except ValueError as e:
+            return {"success": False, "error": {"code": "VALIDATION", "message": str(e)}}
+    elif params.output_filename:
+        final_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    else:
+        return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
+
+    resolved_model = params.model_name
+    if params.model_tier:
+        resolved_model, _ = resolve_model(params.model_tier, "video")
+
+    return await image_to_video(
+        first_frame_path=params.first_frame_path,
+        output_path=final_path,
+        prompt=params.prompt,
+        last_frame_path=params.last_frame_path,
+        model_name=resolved_model,
+        duration=params.duration,
+        aspect_ratio=params.aspect_ratio,
     )
 
 @mcp.resource("local://outputs/{filename}")

@@ -464,3 +464,48 @@ async def test_gemini_generate_image_no_image_returns_failure():
             model_name="gemini-2.5-flash-image",
         )
     assert result["success"] is False
+
+
+# ---- generate_video (expanded params) ----------------------------------------
+
+@pytest.mark.asyncio
+async def test_generate_video_accepts_new_params(tmp_path):
+    out = str(tmp_path / "video.mp4")
+    result = await vertex_ai_tools.generate_video(
+        prompt="a sunset",
+        output_path=out,
+        duration=8,
+        resolution="1080p",
+        aspect_ratio="16:9",
+        audio_enabled=True,
+    )
+    assert result["success"] is True
+    assert result["duration"] == 8
+    assert result["resolution"] == "1080p"
+
+
+# ---- image_to_video ----------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_image_to_video_rejects_missing_frame(tmp_path):
+    result = await vertex_ai_tools.image_to_video(
+        first_frame_path="/nonexistent/frame.png",
+        output_path=str(tmp_path / "out.mp4"),
+        prompt="pan right slowly",
+    )
+    assert result["success"] is False
+    assert "not found" in result["error"]["message"].lower()
+
+@pytest.mark.asyncio
+async def test_image_to_video_success(tmp_path):
+    frame = tmp_path / "frame.png"
+    frame.write_bytes(b"fake-png")
+    out = str(tmp_path / "video.mp4")
+    result = await vertex_ai_tools.image_to_video(
+        first_frame_path=str(frame),
+        output_path=out,
+        prompt="zoom in",
+        duration=6,
+    )
+    assert result["success"] is True
+    assert result["path"] == out

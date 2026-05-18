@@ -970,18 +970,65 @@ async def generate_video(
     prompt: str,
     output_path: str,
     model_name: str = "veo-3.1-fast-generate-001",
+    duration: int = 4,
+    resolution: str = "1080p",
+    aspect_ratio: str = "16:9",
+    audio_enabled: bool = False,
 ) -> Dict[str, Any]:
     t0 = time.time()
-    logger.info(f"[generate_video] START | model={model_name} | prompt='{prompt[:80]}...'")
+    logger.info(f"[generate_video] START | model={model_name} | prompt='{prompt[:80]}'")
     try:
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         with open(output_path, "w") as f:
-            f.write("Simulated video data for: " + prompt)
+            f.write(f"Simulated video | prompt={prompt} | duration={duration}s | {resolution} | {aspect_ratio}")
         logger.info(f"[generate_video] Placeholder written to {output_path} in {time.time()-t0:.1f}s")
         return {
             "success": True,
             "path": output_path,
-            "note": "Placeholder stub - real VideoGenerationModel SDK integration pending.",
+            "duration": duration,
+            "resolution": resolution,
+            "aspect_ratio": aspect_ratio,
+            "audio_enabled": audio_enabled,
+            "note": "Placeholder stub — real Veo SDK integration pending.",
+        }
+    except Exception as e:
+        return {"success": False, "error": _build_unexpected_error(model_name, ":predictLongRunning", e, time.time() - t0)}
+
+
+async def image_to_video(
+    first_frame_path: str,
+    output_path: str,
+    prompt: str = "",
+    last_frame_path: Optional[str] = None,
+    model_name: str = "veo-3.1-fast-generate-001",
+    duration: int = 4,
+    aspect_ratio: str = "16:9",
+) -> Dict[str, Any]:
+    """Generate a video using an image as the first frame (optionally last frame too).
+
+    Stub — real Veo image-to-video SDK integration pending.
+    """
+    t0 = time.time()
+    logger.info(f"[image_to_video] START | model={model_name} | first_frame={first_frame_path}")
+
+    if not os.path.exists(first_frame_path):
+        return {"success": False, "error": _build_validation_error(f"First frame not found: {first_frame_path}")}
+    if last_frame_path and not os.path.exists(last_frame_path):
+        return {"success": False, "error": _build_validation_error(f"Last frame not found: {last_frame_path}")}
+
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        mode = "first+last" if last_frame_path else "first-frame"
+        with open(output_path, "w") as f:
+            f.write(f"Simulated video | mode={mode} | prompt={prompt} | duration={duration}s | {aspect_ratio}")
+        logger.info(f"[image_to_video] Placeholder written to {output_path} in {time.time()-t0:.1f}s")
+        return {
+            "success": True,
+            "path": output_path,
+            "duration": duration,
+            "aspect_ratio": aspect_ratio,
+            "mode": mode,
+            "note": "Placeholder stub — real Veo image-to-video SDK integration pending.",
         }
     except Exception as e:
         return {"success": False, "error": _build_unexpected_error(model_name, ":predictLongRunning", e, time.time() - t0)}
