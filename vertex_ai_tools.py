@@ -1,3 +1,6 @@
+# Developer: Mirac Orhan (mirac.orhan@gmail.com)
+# License: Open Source (MIT License) - Free for everyone to use, modify, and distribute.
+
 import asyncio
 import os
 import base64

@@ -1,3 +1,6 @@
+# Developer: Mirac Orhan (mirac.orhan@gmail.com)
+# License: Open Source (MIT License) - Free for everyone to use, modify, and distribute.
+
 import asyncio
 import os
 from typing import Optional, List
@@ -19,7 +22,7 @@ from config import PROJECT_ID, LOCATION, DEFAULT_OUTPUT_DIR, GOOGLE_ACCESS_TOKEN
 from discovery import get_recommended_models
 
 # Initialize the MCP Server
-mcp = FastMCP("GoogleImageGenerator")
+mcp = FastMCP("OpenGoogleImageGenerator")
 
 # Initialize Vertex AI
 if PROJECT_ID:

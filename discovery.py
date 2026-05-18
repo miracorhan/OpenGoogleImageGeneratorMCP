@@ -1,3 +1,6 @@
+# Developer: Mirac Orhan (mirac.orhan@gmail.com)
+# License: Open Source (MIT License) - Free for everyone to use, modify, and distribute.
+
 """Static recommended-model catalog.
 
 For the live-probed list of what is actually reachable in the current

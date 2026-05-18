@@ -1,4 +1,4 @@
-# GoogleImageGenerator MCP
+# Open Google Image Generator MCP
 
 This project is a Model Context Protocol (MCP) server that exposes Google Cloud Vertex AI capabilities—specifically Imagen 3 and Gemini Vision models—to MCP-compatible clients. It is built using the `FastMCP` framework.
 
@@ -87,7 +87,7 @@ Before you begin, ensure you have the following resources and permissions set up
 ### 1. Clone the Repository
 Navigate to the project directory in your terminal:
 ```bash
-cd GoogleImageGeneratorMCP
+cd OpenGoogleImageGeneratorMCP
 ```
 
 ### 2. Install Dependencies
@@ -144,10 +144,10 @@ To use this server, you need to configure your MCP client (such as Claude Deskto
 ```json
 {
   "mcpServers": {
-    "GoogleImageGenerator": {
+    "OpenGoogleImageGenerator": {
       "command": "python",
       "args": [
-        "/absolute/path/to/your/GoogleImageGeneratorMCP/mcp_server.py"
+        "/absolute/path/to/your/OpenGoogleImageGeneratorMCP/mcp_server.py"
       ],
       "env": {
         "GOOGLE_CLOUD_PROJECT": "your-google-cloud-project-id",
@@ -165,3 +165,11 @@ Once configured and the client is restarted, you can ask your AI assistant tasks
 - *"Transform this photo into a hand-drawn pencil sketch."* (uses `tool_transform_image`)
 - *"Remove the background from the image I just generated."*
 - *"Analyze this image and tell me what objects are present."*
+
+---
+
+## Author & License
+
+- **Developer:** Mirac Orhan (<mirac.orhan@gmail.com>)
+- **License:** [MIT License](LICENSE) (Open Source - Free for everyone to use, modify, and distribute)
+
