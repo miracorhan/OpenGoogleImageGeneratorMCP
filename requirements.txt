@@ -1,0 +1,5 @@
+google-cloud-aiplatform
+mcp
+Pillow
+python-dotenv
+pydantic

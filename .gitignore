@@ -1,0 +1,71 @@
+# ==========================================
+# Google Image Generator MCP - .gitignore
+# ==========================================
+
+# --- Security & Secrets (CRITICAL) ---
+.env
+.env.*
+*.env
+*.env.*
+*.key
+*.pem
+*credential*.json
+*service-account*.json
+gcp-key.json
+key.json
+secrets/
+private/
+
+# --- Environment & Virtualenvs ---
+.venv/
+venv/
+env/
+ENV/
+.env/
+build/
+dist/
+*.egg-info/
+
+# --- Python Build & Caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.noseids
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+
+# --- IDEs & Editors ---
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*~
+.project
+.pydevproject
+.settings/
+
+# --- OS Specific ---
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- Project Specific Temporaries & Outputs ---
+logs/
+outputs/
+.claude/
+.gemini/
+help.txt
