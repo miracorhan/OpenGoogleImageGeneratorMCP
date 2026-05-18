@@ -84,7 +84,7 @@ class GenerateImageParams(BaseModel):
         "imagen-4.0-fast-generate-001",
         description="Imagen model. GA: imagen-4.0-fast-generate-001 (fast, default), imagen-4.0-generate-001 (quality), imagen-4.0-ultra-generate-001 (ultra), imagen-3.0-generate-002 (stable).",
     )
-    model_tier: Optional[str] = Field(None, description="Shorthand tier: fast / balanced / quality / ultra. Overrides model_name when set. balanced routes to gemini-2.5-flash-image.")
+    model_tier: Optional[Literal["fast", "balanced", "quality", "ultra"]] = Field(None, description="Shorthand tier: fast / balanced / quality / ultra. Overrides model_name when set. balanced routes to gemini-2.5-flash-image.")
     number_of_images: int = Field(1, ge=1, le=4, description="Number of images to generate.")
     aspect_ratio: str = Field("1:1", description="Aspect ratio (e.g., 1:1, 16:9, 4:3, 9:16).")
     return_base64: bool = Field(False, description="Whether to return the base64 encoded image.")
@@ -153,7 +153,6 @@ class EditImageParams(BaseModel):
     base_image_path: str = Field(..., description="Absolute or relative path to the source image.")
     output_filename: Optional[str] = Field(None, description="Name of the file to save the edited image as.")
     output_path: Optional[str] = Field(None, description="Absolute path for the output file. Takes priority over output_filename.")
-    model_tier: Optional[str] = Field(None, description="Shorthand tier: fast / quality. Overrides model_name.")
     mask_image_path: Optional[str] = Field(
         None,
         description=(
@@ -189,8 +188,6 @@ async def tool_edit_image(params: EditImageParams) -> dict:
     For free-form natural-language transforms (style transfer, scene rewriting),
     use tool_transform_image instead.
     """
-    from model_registry import resolve_model
-
     if params.output_path:
         try:
             final_path = _validate_output_path(params.output_path)
@@ -201,17 +198,13 @@ async def tool_edit_image(params: EditImageParams) -> dict:
     else:
         return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
 
-    resolved_model = params.model_name
-    if params.model_tier:
-        resolved_model, _ = resolve_model(params.model_tier, "transform")
-
     return await edit_image(
         prompt=params.prompt,
         base_image_path=params.base_image_path,
         output_path=final_path,
         mask_image_path=params.mask_image_path,
         edit_mode=params.edit_mode,
-        model_name=resolved_model,
+        model_name=params.model_name,
         negative_prompt=params.negative_prompt,
         sample_count=params.sample_count,
         return_base64=params.return_base64,
@@ -223,7 +216,7 @@ class TransformImageParams(BaseModel):
     base_image_path: str = Field(..., description="Path to the primary input image.")
     output_filename: Optional[str] = Field(None, description="Name of the file to save the transformed image as.")
     output_path: Optional[str] = Field(None, description="Absolute path for the output file. Takes priority over output_filename.")
-    model_tier: Optional[str] = Field(None, description="Shorthand tier: fast / quality. Overrides model_name.")
+    model_tier: Optional[Literal["fast", "balanced", "quality", "ultra"]] = Field(None, description="Shorthand tier: fast / balanced / quality / ultra. Overrides model_name. fast/balanced → gemini-2.5-flash-image, quality/ultra → gemini-2.5-pro-image.")
     additional_image_paths: Optional[List[str]] = Field(
         None,
         description="Optional list of additional reference image paths (e.g. style refs).",
