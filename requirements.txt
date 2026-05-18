@@ -1,4 +1,5 @@
 google-cloud-aiplatform
+google-genai>=1.0.0
 mcp
 Pillow
 python-dotenv

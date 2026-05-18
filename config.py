@@ -38,6 +38,10 @@ IMPERSONATE_SERVICE_ACCOUNT = os.environ.get("IMPERSONATE_SERVICE_ACCOUNT")
 # Ensure output directory exists
 os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
 
+# Google GenAI SDK settings
+GOOGLE_GENAI_API_KEY = os.environ.get("GOOGLE_GENAI_API_KEY")
+GOOGLE_GENAI_BACKEND = os.environ.get("GOOGLE_GENAI_BACKEND", "vertex_ai")
+
 
 def check_for_updates() -> None:
     """Query GitHub releases API and log a warning if a newer version is available."""
