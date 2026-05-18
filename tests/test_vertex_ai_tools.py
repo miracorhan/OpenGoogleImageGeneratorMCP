@@ -338,7 +338,7 @@ async def test_remove_background_success(mock_predict, tmp_path):
     mock_predict.return_value = {"predictions": [{"bytesBase64Encoded": FAKE_B64}]}
     base = tmp_path / "subj.png"; base.write_bytes(FAKE_PNG)
     result = await remove_background(base_image_path=str(base),
-                                      model_name="imagen-3.0-generate-002",
+                                      model_name="imagen-3.0-capability-001",
                                       return_base64=True)
     assert result["success"] is True
 
@@ -349,3 +349,25 @@ def test_supported_edit_modes_includes_defaults():
     assert "EDIT_MODE_DEFAULT" in SUPPORTED_EDIT_MODES
     assert "EDIT_MODE_INPAINT_INSERTION" in SUPPORTED_EDIT_MODES
     assert "EDIT_MODE_OUTPAINT" in SUPPORTED_EDIT_MODES
+
+
+# ---- _validate_output_path --------------------------------------------------
+
+def test_validate_output_path_accepts_absolute():
+    import os
+    from vertex_ai_tools import _validate_output_path
+    abs_path = os.path.abspath("outputs/test.png")
+    result = _validate_output_path(abs_path)
+    assert result == abs_path
+
+
+def test_validate_output_path_rejects_relative():
+    from vertex_ai_tools import _validate_output_path
+    with pytest.raises(ValueError, match="absolute"):
+        _validate_output_path("relative/path/file.png")
+
+
+def test_validate_output_path_rejects_dotdot():
+    from vertex_ai_tools import _validate_output_path
+    with pytest.raises(ValueError, match="absolute"):
+        _validate_output_path("C:/outputs/../secret/file.png")

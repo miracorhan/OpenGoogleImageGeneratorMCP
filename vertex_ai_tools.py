@@ -104,6 +104,15 @@ def _mime_for_path(path: str) -> str:
     return "image/jpeg"
 
 
+def _validate_output_path(path: str) -> str:
+    """Ensure output_path is absolute and contains no '..' components."""
+    if not os.path.isabs(path) or ".." in path.replace("\\", "/").split("/"):
+        raise ValueError(
+            f"output_path must be an absolute path without '..' components. Got: {path!r}"
+        )
+    return os.path.abspath(path)
+
+
 async def _to_thread(func, *args, timeout: float = API_TIMEOUT, **kwargs):
     return await asyncio.wait_for(asyncio.to_thread(func, *args, **kwargs), timeout=timeout)
 
@@ -823,7 +832,7 @@ async def upscale_image(
 async def remove_background(
     base_image_path: str,
     output_path: Optional[str] = None,
-    model_name: str = "imagen-3.0-generate-002",
+    model_name: str = "imagen-3.0-capability-001",
     return_base64: bool = False,
 ) -> Dict[str, Any]:
     t0 = time.time()
@@ -837,7 +846,14 @@ async def remove_background(
     try:
         base_b64 = _read_image_b64(base_image_path)
         payload = {
-            "instances": [{"prompt": "", "image": {"bytesBase64Encoded": base_b64}}],
+            "instances": [{
+                "prompt": "",
+                "referenceImages": [{
+                    "referenceType": "REFERENCE_TYPE_RAW",
+                    "referenceId": 1,
+                    "referenceImage": {"bytesBase64Encoded": base_b64},
+                }],
+            }],
             "parameters": {"sampleCount": 1, "editMode": "EDIT_MODE_BGSWAP"},
         }
         response = await _to_thread(_imagen_predict, model_name, payload, timeout=API_TIMEOUT)
