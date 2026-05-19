@@ -97,7 +97,7 @@ class GenerateImageParams(BaseModel):
     add_watermark: bool = Field(True, description="Add SynthID digital watermark. Must be False when seed is set.")
     safety_setting: Literal["block_low_and_above", "block_medium_and_above", "block_only_high"] = Field("block_medium_and_above", description="Safety filter level.")
     person_generation: Literal["allow_all", "allow_adult", "dont_allow"] = Field("allow_adult", description="Person generation policy.")
-    output_format: Literal["PNG", "JPEG"] = Field("PNG", description="Output format.")
+    output_format: Literal["PNG", "JPEG", "WEBP", "AVIF"] = Field("PNG", description="Output format: PNG (default), JPEG, WEBP, or AVIF. WEBP/AVIF are converted client-side from PNG.")
     compression_quality: int = Field(85, ge=0, le=100, description="JPEG compression quality (0-100). Only applies when output_format=JPEG.")
     storage_uri: Optional[str] = Field(None, description="Cloud Storage destination (e.g. gs://bucket/path/). Image is written directly to GCS.")
 
@@ -131,6 +131,7 @@ async def tool_generate_image(params: GenerateImageParams) -> dict:
             output_path=final_path,
             model_name=resolved_model,
             return_base64=params.return_base64,
+            save_format=params.output_format.lower(),
         )
 
     return await generate_image(
@@ -182,6 +183,7 @@ class EditImageParams(BaseModel):
     negative_prompt: Optional[str] = Field(None, description="Optional negative prompt.")
     sample_count: int = Field(1, ge=1, le=4, description="Number of edited samples to generate.")
     return_base64: bool = Field(False, description="Whether to return the base64-encoded image.")
+    save_format: Literal["png", "jpeg", "webp", "avif"] = Field("png", description="Output image format: png (default), jpeg, webp, or avif.")
 
 @mcp.tool()
 async def tool_edit_image(params: EditImageParams) -> dict:
@@ -211,6 +213,7 @@ async def tool_edit_image(params: EditImageParams) -> dict:
         negative_prompt=params.negative_prompt,
         sample_count=params.sample_count,
         return_base64=params.return_base64,
+        save_format=params.save_format,
     )
 
 
@@ -233,6 +236,7 @@ class TransformImageParams(BaseModel):
         ),
     )
     return_base64: bool = Field(False, description="Whether to return the base64-encoded image.")
+    save_format: Literal["png", "jpeg", "webp", "avif"] = Field("png", description="Output image format: png (default), jpeg, webp, or avif.")
 
 @mcp.tool()
 async def tool_transform_image(params: TransformImageParams) -> dict:
@@ -264,6 +268,7 @@ async def tool_transform_image(params: TransformImageParams) -> dict:
         additional_image_paths=params.additional_image_paths,
         model_name=resolved_model,
         return_base64=params.return_base64,
+        save_format=params.save_format,
     )
 
 class AnalyzeImageParams(BaseModel):
@@ -301,6 +306,7 @@ class UpscaleImageParams(BaseModel):
         description="Model to use. GA: imagen-3.0-generate-002 (default). Other Imagen variants supported.",
     )
     return_base64: bool = Field(False, description="Whether to return the base64 encoded image.")
+    save_format: Literal["png", "jpeg", "webp", "avif"] = Field("png", description="Output image format: png (default), jpeg, webp, or avif.")
 
 @mcp.tool()
 async def tool_upscale_image(params: UpscaleImageParams) -> dict:
@@ -321,7 +327,8 @@ async def tool_upscale_image(params: UpscaleImageParams) -> dict:
         base_image_path=params.base_image_path,
         output_path=final_path,
         model_name=params.model_name,
-        return_base64=params.return_base64
+        return_base64=params.return_base64,
+        save_format=params.save_format,
     )
 
 class RemoveBackgroundParams(BaseModel):
@@ -613,6 +620,75 @@ async def tool_generate_music(params: GenerateMusicParams) -> dict:
         output_path=final_path,
         model_name=params.model_name,
         duration=params.duration,
+    )
+
+
+class EmbedParams(BaseModel):
+    text: str = Field(..., description="Text to embed into a float vector.")
+    model: Optional[str] = Field(None, description="Override embedding model. Defaults to text-embedding-004 (Vertex AI) or gemini-embedding-2 (Gemini API).")
+
+@mcp.tool()
+async def tool_embed(params: EmbedParams) -> dict:
+    """Generate a float embedding vector for the given text using Gemini Embedding."""
+    from genai_tools import embed
+    return await embed(text=params.text, model=params.model)
+
+
+class AnalyzeVideoParams(BaseModel):
+    video_path: str = Field(..., description="Absolute path to the local video file (max 20MB). Supported: mp4, mov, avi, webm, mkv.")
+    prompt: str = Field(..., description="The question or analysis instruction about the video.")
+    model_tier: Literal["fast", "quality"] = Field("fast", description="fast → gemini-2.5-flash, quality → gemini-3.1-pro.")
+    model: Optional[str] = Field(None, description="Override the model name directly.")
+
+@mcp.tool()
+async def tool_analyze_video(params: AnalyzeVideoParams) -> dict:
+    """Analyze a local video file using Gemini Vision. Supports mp4, mov, avi, webm, mkv. Max 20MB inline."""
+    from genai_tools import analyze_video
+    return await analyze_video(
+        video_path=params.video_path,
+        prompt=params.prompt,
+        model_tier=params.model_tier,
+        model=params.model,
+    )
+
+
+class GenerateSpeechParams(BaseModel):
+    text: str = Field(..., description="Text to convert to speech.")
+    voice: Literal["Aoede", "Charon", "Fenrir", "Kore", "Puck"] = Field("Kore", description="Voice to use for speech synthesis.")
+    output_filename: Optional[str] = Field(None, description="Output filename (e.g. speech.wav). Saved to DEFAULT_OUTPUT_DIR.")
+    output_path: Optional[str] = Field(None, description="Absolute output file path. Takes priority over output_filename.")
+    model_tier: Literal["fast", "quality"] = Field("fast", description="fast → gemini-2.5-flash-preview-tts, quality → gemini-2.5-pro-preview-tts.")
+    model: Optional[str] = Field(None, description="Override the model name directly.")
+
+@mcp.tool()
+async def tool_generate_speech(params: GenerateSpeechParams) -> dict:
+    """Convert text to speech using Gemini TTS. Returns a WAV file path in outputs/."""
+    from genai_tools import generate_speech
+    output_path = params.output_path
+    if not output_path and params.output_filename:
+        output_path = os.path.join(DEFAULT_OUTPUT_DIR, params.output_filename)
+    return await generate_speech(
+        text=params.text,
+        voice=params.voice,
+        output_path=output_path,
+        model_tier=params.model_tier,
+        model=params.model,
+    )
+
+
+class LiveGenerateParams(BaseModel):
+    prompt: str = Field(..., description="The text prompt to send to Gemini streaming.")
+    model_tier: Literal["fast", "quality"] = Field("fast", description="fast → gemini-2.5-flash, quality → gemini-3.1-pro.")
+    model: Optional[str] = Field(None, description="Override the model name directly.")
+
+@mcp.tool()
+async def tool_live_generate(params: LiveGenerateParams) -> dict:
+    """Generate text using Gemini streaming. The full streamed response is accumulated and returned."""
+    from genai_tools import live_generate
+    return await live_generate(
+        prompt=params.prompt,
+        model_tier=params.model_tier,
+        model=params.model,
     )
 
 
