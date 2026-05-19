@@ -43,31 +43,38 @@ GOOGLE_GENAI_API_KEY = os.environ.get("GOOGLE_GENAI_API_KEY")
 GOOGLE_GENAI_BACKEND = os.environ.get("GOOGLE_GENAI_BACKEND", "vertex_ai")
 
 
-def check_for_updates() -> None:
-    """Query GitHub releases API and log a warning if a newer version is available."""
+def check_for_updates() -> dict:
+    """Query GitHub releases API and return update status dict.
+
+    Returns:
+        {"up_to_date": bool, "current": str, "latest": str, "url": str}
+    """
     import urllib.request
     import json
 
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    releases_url = f"https://github.com/{GITHUB_REPO}/releases/latest"
+    result = {"up_to_date": True, "current": __version__, "latest": __version__, "url": releases_url}
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
     try:
         req = urllib.request.Request(
-            url, headers={"User-Agent": f"OpenGoogleImageGeneratorMCP/{__version__}"}
+            api_url, headers={"User-Agent": f"OpenGoogleImageGeneratorMCP/{__version__}"}
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
         latest_tag = data.get("tag_name", "").lstrip("v")
         if not latest_tag:
-            return
+            return result
         current = tuple(int(x) for x in __version__.split("."))
         latest = tuple(int(x) for x in latest_tag.split("."))
+        result["latest"] = latest_tag
         if latest > current:
+            result["up_to_date"] = False
             logger.warning(
                 f"Update available: v{__version__} → v{latest_tag}. "
-                f"Run 'git pull' to update. "
-                f"https://github.com/{GITHUB_REPO}/releases/latest"
+                f"Run 'git pull' to update. {releases_url}"
             )
         else:
             logger.info(f"OpenGoogleImageGeneratorMCP v{__version__} is up to date.")
     except Exception:
-        # Network unavailable or no releases published yet — silently skip
         pass
+    return result

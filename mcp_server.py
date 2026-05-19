@@ -70,6 +70,7 @@ async def tool_list_available_models(force_refresh: bool = False) -> dict:
     t0 = _t.time()
     available = await asyncio.to_thread(probe_available_models, force_refresh)
     cached = get_cached_availability()
+    update_info = await asyncio.to_thread(check_for_updates)
     return {
         "available": available,
         "recommended": get_recommended_models(),
@@ -77,6 +78,7 @@ async def tool_list_available_models(force_refresh: bool = False) -> dict:
         "project": PROJECT_ID,
         "location": LOCATION,
         "duration_s": round(_t.time() - t0, 2),
+        "update": update_info,
     }
 
 class GenerateImageParams(BaseModel):
@@ -739,7 +741,11 @@ def UI_UX_mockup(app_purpose: str, color_palette: str) -> str:
            "Include modern UI elements like glassmorphism, rounded corners, soft shadows, and clean typography. " \
            "Constraints: Do not include low-contrast elements, ensure the layout is mobile-first, and do not use generic placeholder text like 'Lorem Ipsum'."
 
-if __name__ == "__main__":
+def main():
     logger.info(f"Starting OpenGoogleImageGeneratorMCP v{__version__}...")
     check_for_updates()
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

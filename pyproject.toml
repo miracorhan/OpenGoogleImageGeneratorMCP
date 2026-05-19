@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "open-google-image-mcp"
+version = "3.0.0"
+description = "MCP server exposing Google Vertex AI and GenAI capabilities (Imagen, Gemini, Veo, Lyria, Chirp)"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Mirac Orhan", email = "mirac.orhan@gmail.com" }]
+requires-python = ">=3.9"
+keywords = ["mcp", "google", "vertex-ai", "imagen", "gemini", "generative-ai", "veo", "chirp", "lyria"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "google-cloud-aiplatform",
+    "google-genai>=1.0.0",
+    "mcp",
+    "Pillow",
+    "python-dotenv",
+    "pydantic",
+]
+
+[project.urls]
+Homepage = "https://github.com/miracorhan/OpenGoogleImageGeneratorMCP"
+Repository = "https://github.com/miracorhan/OpenGoogleImageGeneratorMCP"
+"Bug Tracker" = "https://github.com/miracorhan/OpenGoogleImageGeneratorMCP/issues"
+Changelog = "https://github.com/miracorhan/OpenGoogleImageGeneratorMCP/releases"
+
+[project.scripts]
+opengoogle-mcp = "mcp_server:main"
+
+[tool.setuptools]
+py-modules = [
+    "mcp_server",
+    "vertex_ai_tools",
+    "genai_tools",
+    "config",
+    "pipeline",
+    "model_registry",
+    "discovery",
+    "format_converter",
+    "update",
+]
