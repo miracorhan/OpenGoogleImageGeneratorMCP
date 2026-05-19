@@ -10,45 +10,45 @@ This project is a Model Context Protocol (MCP) server that exposes Google Cloud 
 
 | Tool | Description | Backend |
 |---|---|---|
-| `tool_generate_image` | Text-to-image generation. Supports aspect ratio, negative prompt, seed, watermark, and WebP/AVIF output | Imagen 4 (`imagen-4.0-fast-generate-001`) |
+| `tool_generate_image` | Text-to-image generation. Supports aspect ratio, negative prompt, seed, watermark, GCS output, and WebP/AVIF output | Imagen 4 (`imagen-4.0-fast-generate-001`) |
 | `tool_edit_image` | Mask-based inpaint/outpaint, background swap, product image, and prompt-driven edit. See *Edit modes* below | Imagen 3 Capability (`imagen-3.0-capability-001`) |
 | `tool_transform_image` | Free-form `image + text → image` transformation: style transfer, scene rewriting, multi-reference composition | Gemini multimodal (`gemini-2.5-flash-image`) |
-| `tool_analyze_image` | Multimodal image understanding and Q&A | Gemini Vision (`gemini-2.5-flash`) |
+| `tool_analyze_image` | Multimodal image understanding and Q&A. Supports `thinking_level` (MINIMAL/LOW/MEDIUM/HIGH) and `media_resolution` (LOW/MEDIUM/HIGH/ULTRA_HIGH) | Gemini Vision (`gemini-2.5-flash`) |
 | `tool_upscale_image` | Upscale low-resolution images | Imagen |
 | `tool_remove_background` | Remove background via `EDIT_MODE_BGSWAP` | Imagen |
-| `tool_batch_generate` | Parallel batch text-to-image generation (up to 4 concurrent requests) | Imagen / Gemini |
+| `tool_batch_generate` | Parallel batch text-to-image generation (up to 10 prompts, max 4 concurrent). `balanced` tier not supported for batch | Imagen |
 | `tool_run_pipeline` | Sequential multi-step image processing pipeline (generate → edit → transform → …) | Mixed |
 
 ### Video Tools
 
 | Tool | Description | Backend |
 |---|---|---|
-| `tool_generate_video` | Text-to-video generation | Veo (`veo-3.1-generate-preview`) |
-| `tool_image_to_video` | Animate a still image into video | Veo |
-| `tool_extend_video` | Extend an existing video clip | Veo |
-| `tool_video_object_edit` | Edit objects in a video via prompt | Veo |
-| `tool_analyze_video` | Video understanding and Q&A | Gemini GenAI SDK |
+| `tool_generate_video` | Text-to-video generation. Supports `audio_enabled` for Veo 3+ | Veo (`veo-3.1-fast-generate-001`) |
+| `tool_image_to_video` | Animate a still image into video. Supports optional `last_frame_path` for first+last frame mode | Veo |
+| `tool_extend_video` | Extend an existing video clip by 4, 6, or 8 seconds | Veo |
+| `tool_video_object_edit` | Insert or remove an object in a video via `operation` (`insert`/`remove`) and `prompt` | Veo |
+| `tool_analyze_video` | Video understanding and Q&A (max 20MB; mp4, mov, avi, webm, mkv) | Gemini GenAI SDK |
 
 ### Audio Tools
 
 | Tool | Description | Backend |
 |---|---|---|
-| `tool_generate_speech` | Text-to-speech with voice selection (Aoede, Charon, Fenrir, Kore, Puck). Outputs WAV | Chirp3 / Gemini TTS (GenAI SDK) |
-| `tool_generate_music` | Music generation | Lyria 2 / Lyria 3 (GenAI SDK) |
+| `tool_generate_speech` | Text-to-speech with voice selection (Aoede, Charon, Fenrir, Kore, Puck). Supports `model_tier` (fast/quality). Outputs WAV | Gemini TTS (`gemini-2.5-flash-preview-tts` / `gemini-2.5-pro-preview-tts`) |
+| `tool_generate_music` | Music generation from a text prompt | Lyria 2 / Lyria 3 (GenAI SDK) |
 
 ### GenAI SDK Tools
 
 | Tool | Description | Backend |
 |---|---|---|
-| `tool_embed` | Text and multimodal embeddings | Gemini Embedding (GenAI SDK) |
-| `tool_live_generate` | Real-time / streaming generation | Gemini Live (GenAI SDK) |
+| `tool_embed` | Text embeddings as float vectors | Gemini Embedding (`text-embedding-004` on Vertex AI, `gemini-embedding-2` on Gemini API) |
+| `tool_live_generate` | Streaming text generation — response is accumulated and returned in full | Gemini Live (`gemini-2.5-flash` / `gemini-3.1-pro`) |
 
 ### Utility Tools
 
 | Tool | Description |
 |---|---|
-| `tool_list_available_models` | Live-probes every candidate model in the configured project/location and returns only those that respond (200/400 = reachable, 404 = excluded). Cached for the server process lifetime; pass `force_refresh=true` to rescan. |
-| `tool_upload_file` | Upload a local file to Vertex AI / Cloud Storage for use in subsequent tool calls |
+| `tool_list_available_models` | Live-probes every candidate model in the configured project/location and returns only those that respond (200/400 = reachable, 404 = excluded). Cached for the server process lifetime; pass `force_refresh=true` to rescan. Also reports available update versions. |
+| `tool_upload_file` | Register a local file for use as a reference image in subsequent tool calls (e.g. `tool_transform_image`). Returns a `file_uri`. |
 
 ---
 
@@ -79,17 +79,27 @@ Most tools accept a `model_tier` parameter:
 | Tier | Description |
 |---|---|
 | `fast` *(default)* | Lowest latency, lowest cost |
-| `standard` | Higher quality, moderate latency |
-| `balanced` | Quality / speed trade-off; uses Gemini for image generation |
+| `balanced` | Quality / speed trade-off; routes to Gemini for image generation. **Not supported** for `tool_batch_generate` |
+| `quality` | Higher quality, moderate latency |
+| `ultra` | Maximum quality (Imagen 4 Ultra / Veo quality models) |
+
+#### Model resolution by tier and tool
+
+| Tier | `tool_generate_image` | `tool_transform_image` | `tool_generate_video` |
+|---|---|---|---|
+| `fast` | `imagen-4.0-fast-generate-001` | `gemini-2.5-flash-image` | `veo-3.1-fast-generate-001` |
+| `balanced` | `gemini-2.5-flash-image` | `gemini-2.5-flash-image` | `veo-3.1-fast-generate-001` |
+| `quality` | `imagen-4.0-generate-001` | `gemini-2.5-pro-image` | `veo-3.1-generate-001` |
+| `ultra` | `imagen-4.0-ultra-generate-001` | `gemini-2.5-pro-image` | `veo-3.1-generate-001` |
 
 ### Output formats
 
-`tool_generate_image`, `tool_edit_image`, `tool_transform_image`, and `tool_upscale_image` accept a `save_format` parameter:
+`tool_generate_image`, `tool_edit_image`, `tool_transform_image`, and `tool_upscale_image` accept a `save_format` / `output_format` parameter:
 
 | Format | Notes |
 |---|---|
 | `PNG` *(default)* | Lossless |
-| `JPEG` | Smaller files, lossy |
+| `JPEG` | Smaller files, lossy. `compression_quality` (0-100, default 85) applies only to JPEG |
 | `WEBP` | Modern lossless/lossy, wide browser support |
 | `AVIF` | Best compression, requires `Pillow>=10` |
 
@@ -150,19 +160,21 @@ For GenAI SDK tools (`tool_embed`, `tool_analyze_video`, `tool_generate_speech`,
 
 ## Installation & Setup
 
-### 1. Clone the Repository
+### Option A: Install from PyPI
 
 ```bash
-cd OpenGoogleImageGeneratorMCP
+pip install open-google-image-generator-mcp
 ```
 
-### 2. Install Dependencies
+### Option B: Clone the Repository
 
 ```bash
+git clone https://github.com/miracorhan/OpenGoogleImageGeneratorMCP.git
+cd OpenGoogleImageGeneratorMCP
 pip install -r requirements.txt
 ```
 
-### 3. Authentication (Critical Step)
+### Authentication (Critical Step)
 
 The server uses Google Cloud Application Default Credentials (ADC):
 
@@ -172,7 +184,7 @@ gcloud auth application-default login
 
 *This opens a browser for login. Use an account with access to your Google Cloud project.*
 
-### 4. Environment Configuration
+### Environment Configuration
 
 Create a `.env` file in the project root:
 
@@ -244,6 +256,7 @@ python mcp_server.py
 - *"Generate a 30-second ambient music track."* (`tool_generate_music`)
 - *"Embed this sentence for semantic search."* (`tool_embed`)
 - *"Animate this product photo into a 5-second video."* (`tool_image_to_video`)
+- *"Generate a video of a sunset with audio."* (`tool_generate_video`, `audio_enabled=true`)
 
 ---
 
