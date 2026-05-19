@@ -4,6 +4,7 @@ import asyncio
 import functools
 import json
 import os
+import struct
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -58,6 +59,20 @@ def _build_adc_credentials():
     except Exception as e:
         logger.info(f"[genai] ADC credential build skipped ({type(e).__name__}: {e})")
         return None
+
+
+def _wrap_pcm_as_wav(pcm: bytes, sample_rate: int = 24000, channels: int = 1, bits: int = 16) -> bytes:
+    """Prepend a RIFF/WAV header to raw Linear16 PCM bytes."""
+    data_size = len(pcm)
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF", 36 + data_size, b"WAVE",
+        b"fmt ", 16, 1, channels, sample_rate,
+        sample_rate * channels * bits // 8,
+        channels * bits // 8, bits,
+        b"data", data_size,
+    )
+    return header + pcm
 
 
 def _reset_genai_client():
@@ -261,10 +276,11 @@ async def generate_speech(
             )
 
         response = await _to_thread(_do_request, timeout=60.0)
-        audio_data = response.candidates[0].content.parts[0].inline_data.data
+        raw_pcm = response.candidates[0].content.parts[0].inline_data.data
+        wav_bytes = _wrap_pcm_as_wav(raw_pcm)
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         with open(output_path, "wb") as f:
-            f.write(audio_data)
+            f.write(wav_bytes)
         logger.info(f"[generate_speech] SUCCESS in {time.time()-t0:.1f}s | path={output_path}")
         return {
             "success": True,
