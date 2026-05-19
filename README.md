@@ -1,19 +1,56 @@
 # Open Google Image Generator MCP
 
-This project is a Model Context Protocol (MCP) server that exposes Google Cloud Vertex AI capabilities—specifically Imagen 3 and Gemini Vision models—to MCP-compatible clients. It is built using the `FastMCP` framework.
+This project is a Model Context Protocol (MCP) server that exposes Google Cloud Vertex AI and Google GenAI SDK capabilities—Imagen, Gemini, Veo, Lyria, and Chirp models—to MCP-compatible clients. Built with the `FastMCP` framework.
+
+> **Current version: 3.0.0** — Full GenAI SDK integration (embed, speech, video analysis, live generation), WebP/AVIF format support, multi-tier model selection, parallel batch generation, sequential pipeline engine, and comprehensive video tools.
 
 ## Features & Tools
 
-The server provides a comprehensive suite of MCP tools for interacting with Vertex AI:
+### Image Tools
 
-- **`tool_list_available_models`**: Live-probes every candidate publisher model in the configured project/location and returns only the ones that actually respond (200/400 = reachable, 404 = excluded). Cached for the server process lifetime; pass `force_refresh=true` to rescan.
-- **`tool_generate_image`**: Text-to-image generation via Imagen (default: `imagen-4.0-fast-generate-001`).
-- **`tool_edit_image`**: Precision image editing via **Imagen 3 Capability** (`imagen-3.0-capability-001`). Supports mask-based inpaint/outpaint, background swap, product image, and mask-free prompt-driven edit. See *Edit modes* below.
-- **`tool_transform_image`**: *(new)* Free-form `image + text → image` transformation via **Gemini multimodal** (`gemini-2.5-flash-image`). Use for style transfer, scene rewriting, or any natural-language image edit that doesn't need pixel-precise masking. Accepts optional additional reference images.
-- **`tool_analyze_image`**: Multimodal image analysis via Gemini Vision (default: `gemini-2.5-flash`).
-- **`tool_upscale_image`**: Upscales low-resolution images via Imagen.
-- **`tool_remove_background`**: Removes background via Imagen `EDIT_MODE_BGSWAP`.
-- **`tool_generate_video`**: Currently a forward-compatible stub for Veo 3.1.
+| Tool | Description | Backend |
+|---|---|---|
+| `tool_generate_image` | Text-to-image generation. Supports aspect ratio, negative prompt, seed, watermark, and WebP/AVIF output | Imagen 4 (`imagen-4.0-fast-generate-001`) |
+| `tool_edit_image` | Mask-based inpaint/outpaint, background swap, product image, and prompt-driven edit. See *Edit modes* below | Imagen 3 Capability (`imagen-3.0-capability-001`) |
+| `tool_transform_image` | Free-form `image + text → image` transformation: style transfer, scene rewriting, multi-reference composition | Gemini multimodal (`gemini-2.5-flash-image`) |
+| `tool_analyze_image` | Multimodal image understanding and Q&A | Gemini Vision (`gemini-2.5-flash`) |
+| `tool_upscale_image` | Upscale low-resolution images | Imagen |
+| `tool_remove_background` | Remove background via `EDIT_MODE_BGSWAP` | Imagen |
+| `tool_batch_generate` | Parallel batch text-to-image generation (up to 4 concurrent requests) | Imagen / Gemini |
+| `tool_run_pipeline` | Sequential multi-step image processing pipeline (generate → edit → transform → …) | Mixed |
+
+### Video Tools
+
+| Tool | Description | Backend |
+|---|---|---|
+| `tool_generate_video` | Text-to-video generation | Veo (`veo-3.1-generate-preview`) |
+| `tool_image_to_video` | Animate a still image into video | Veo |
+| `tool_extend_video` | Extend an existing video clip | Veo |
+| `tool_video_object_edit` | Edit objects in a video via prompt | Veo |
+| `tool_analyze_video` | Video understanding and Q&A | Gemini GenAI SDK |
+
+### Audio Tools
+
+| Tool | Description | Backend |
+|---|---|---|
+| `tool_generate_speech` | Text-to-speech with voice selection (Aoede, Charon, Fenrir, Kore, Puck). Outputs WAV | Chirp3 / Gemini TTS (GenAI SDK) |
+| `tool_generate_music` | Music generation | Lyria 2 / Lyria 3 (GenAI SDK) |
+
+### GenAI SDK Tools
+
+| Tool | Description | Backend |
+|---|---|---|
+| `tool_embed` | Text and multimodal embeddings | Gemini Embedding (GenAI SDK) |
+| `tool_live_generate` | Real-time / streaming generation | Gemini Live (GenAI SDK) |
+
+### Utility Tools
+
+| Tool | Description |
+|---|---|
+| `tool_list_available_models` | Live-probes every candidate model in the configured project/location and returns only those that respond (200/400 = reachable, 404 = excluded). Cached for the server process lifetime; pass `force_refresh=true` to rescan. |
+| `tool_upload_file` | Upload a local file to Vertex AI / Cloud Storage for use in subsequent tool calls |
+
+---
 
 ### Edit modes (`tool_edit_image`)
 
@@ -26,7 +63,7 @@ The server provides a comprehensive suite of MCP tools for interacting with Vert
 | `EDIT_MODE_BGSWAP` | Swap the background | No |
 | `EDIT_MODE_PRODUCT_IMAGE` | Product reference styling | No |
 
-Use `imagen-3.0-capability-001` (default) for all of the above. The legacy `imagen-3.0-generate-002` model only supports `EDIT_MODE_DEFAULT` and does not accept a mask.
+Use `imagen-3.0-capability-001` (default) for all of the above. The legacy `imagen-3.0-generate-002` only supports `EDIT_MODE_DEFAULT` and does not accept a mask.
 
 ### When to use which "image + text → image" tool
 
@@ -35,9 +72,32 @@ Use `imagen-3.0-capability-001` (default) for all of the above. The legacy `imag
 | Mask-based inpaint/outpaint/BG-swap with pixel precision | **`tool_edit_image`** (Imagen Capability) |
 | "Make it look like X" / style transfer / scene rewriting / multi-reference compositions | **`tool_transform_image`** (Gemini multimodal) |
 
+### Model tiers
+
+Most tools accept a `model_tier` parameter:
+
+| Tier | Description |
+|---|---|
+| `fast` *(default)* | Lowest latency, lowest cost |
+| `standard` | Higher quality, moderate latency |
+| `balanced` | Quality / speed trade-off; uses Gemini for image generation |
+
+### Output formats
+
+`tool_generate_image`, `tool_edit_image`, `tool_transform_image`, and `tool_upscale_image` accept a `save_format` parameter:
+
+| Format | Notes |
+|---|---|
+| `PNG` *(default)* | Lossless |
+| `JPEG` | Smaller files, lossy |
+| `WEBP` | Modern lossless/lossy, wide browser support |
+| `AVIF` | Best compression, requires `Pillow>=10` |
+
+---
+
 ### Error handling
 
-All tools return a uniform error shape so MCP clients and direct Python callers see the same diagnostics:
+All tools return a uniform error shape:
 
 ```json
 {
@@ -66,110 +126,128 @@ All tools return a uniform error shape so MCP clients and direct Python callers 
 | `TIMEOUT` | After 90s — suggests a `-fast-` variant |
 | `VALIDATION` | Client-side validation failure (mask missing, file not found, etc.); **no HTTP call is made** |
 
-Full request/response logs are written to `logs/vertex_ai_mcp.log` (also surfaced in `error.log_path`).
+Full request/response logs are written to `logs/vertex_ai_mcp.log`.
 
 ### Resources & Prompts
 
-- **Local Resources (`local://outputs/{filename}`)**: The server directly exposes generated and processed media files as MCP resources, allowing seamless display within your MCP client (like Claude Desktop or Cursor).
-- **Pre-built Prompts**: Includes specialized prompt templates for `character_design`, `logo_concept`, and `UI_UX_mockup` to help you get the best results following Gemini 3 prompting guidelines.
+- **Local Resources (`local://outputs/{filename}`)**: Generated and processed media files are exposed as MCP resources for seamless display in MCP clients (Claude Desktop, Cursor, etc.).
+- **Pre-built Prompts**: Includes specialized prompt templates for `character_design`, `logo_concept`, and `UI_UX_mockup`.
+
+---
 
 ## Prerequisites & Resources
 
-Before you begin, ensure you have the following resources and permissions set up:
+1. **Python** 3.9 or newer
+2. **Google Cloud Account** with an active project
+3. **Vertex AI API** enabled in your project
+4. **Google Cloud CLI (`gcloud`)** installed and configured
 
-1. **Python**: Python 3.9 or newer installed on your machine.
-2. **Google Cloud Account**: An active Google Cloud account and project.
-3. **Vertex AI API**: The Vertex AI API must be enabled in your Google Cloud Project.
-4. **Google Cloud CLI (`gcloud`)**: Installed and configured for authentication.
+For GenAI SDK tools (`tool_embed`, `tool_analyze_video`, `tool_generate_speech`, `tool_live_generate`, `tool_generate_music`), you additionally need either:
+- A **Gemini API key** (`GOOGLE_GENAI_API_KEY`), or
+- Vertex AI ADC credentials with `GOOGLE_GENAI_BACKEND=vertexai`
+
+---
 
 ## Installation & Setup
 
 ### 1. Clone the Repository
-Navigate to the project directory in your terminal:
+
 ```bash
 cd OpenGoogleImageGeneratorMCP
 ```
 
 ### 2. Install Dependencies
-Install the required Python packages using `pip`:
+
 ```bash
 pip install -r requirements.txt
 ```
 
 ### 3. Authentication (Critical Step)
-The server uses Google Cloud Application Default Credentials (ADC). You must authenticate your local environment using the `gcloud` CLI:
+
+The server uses Google Cloud Application Default Credentials (ADC):
+
 ```bash
 gcloud auth application-default login
 ```
-*This command will open a browser window for you to log in to your Google account. Ensure you log in with an account that has access to your Google Cloud Project.*
+
+*This opens a browser for login. Use an account with access to your Google Cloud project.*
 
 ### 4. Environment Configuration
-Create a `.env` file in the root of the project directory. This file configures the server with your specific Google Cloud details:
+
+Create a `.env` file in the project root:
 
 ```env
-# Your Google Cloud Project ID (Required)
+# Required
 GOOGLE_CLOUD_PROJECT=your-google-cloud-project-id
-
-# The Google Cloud region to use (e.g., us-central1, europe-west4)
 GOOGLE_CLOUD_LOCATION=us-central1
 
-# Directory where generated images/videos will be saved locally
+# Output directory for generated media
 DEFAULT_OUTPUT_DIR=./outputs
 
-# --- Advanced Authentication Options (Optional) ---
-# If you want to bypass Application Default Credentials, you can use one of these:
+# --- GenAI SDK (for embed, speech, live, music, video-analysis tools) ---
+# Option A: Gemini API key (free tier available)
+GOOGLE_GENAI_API_KEY=AIza...
 
-# 1. Direct OAuth 2.0 Access Token: 
-# Useful if an upstream app manages tokens and passes them down.
+# Option B: Use Vertex AI backend (uses ADC above, no separate key needed)
+GOOGLE_GENAI_BACKEND=vertexai
+
+# --- Advanced Vertex AI Authentication (Optional) ---
+# Direct OAuth 2.0 Access Token
 # GOOGLE_ACCESS_TOKEN=ya29.a0AfB_by...
 
-# 2. Service Account Impersonation:
-# Useful for high-security environments where the default account assumes the role of a service account.
+# Service Account Impersonation
 # IMPERSONATE_SERVICE_ACCOUNT=your-service-account@your-project.iam.gserviceaccount.com
 ```
+
+---
 
 ## Usage
 
 ### Running as a Standalone Script
-You can start the MCP server manually to verify it works without errors:
+
 ```bash
 python mcp_server.py
 ```
 
 ### Integrating with MCP Clients
 
-To use this server, you need to configure your MCP client (such as Claude Desktop or Cursor) to launch this script.
+**For Claude Desktop (`claude_desktop_config.json`):**
 
-**For Claude Desktop (example `claude_desktop_config.json`):**
 ```json
 {
   "mcpServers": {
     "OpenGoogleImageGenerator": {
       "command": "python",
-      "args": [
-        "/absolute/path/to/your/OpenGoogleImageGeneratorMCP/mcp_server.py"
-      ],
+      "args": ["/absolute/path/to/OpenGoogleImageGeneratorMCP/mcp_server.py"],
       "env": {
         "GOOGLE_CLOUD_PROJECT": "your-google-cloud-project-id",
-        "GOOGLE_CLOUD_LOCATION": "us-central1"
+        "GOOGLE_CLOUD_LOCATION": "us-central1",
+        "GOOGLE_GENAI_API_KEY": "AIza..."
       }
     }
   }
 }
 ```
-*Note: Make sure to replace `/absolute/path/to/your/...` with the actual path to the script, and configure the path to your python executable if you are using a virtual environment.*
 
-Once configured and the client is restarted, you can ask your AI assistant tasks like:
+*Replace `/absolute/path/to/your/...` with the actual path, and use the correct Python executable if using a virtual environment.*
+
+### Example prompts
+
 - *"Generate an image of a futuristic city at sunset."*
-- *"Edit this banner — add a glowing cyan halo around the logo."* (uses `tool_edit_image`, `EDIT_MODE_DEFAULT`)
-- *"Transform this photo into a hand-drawn pencil sketch."* (uses `tool_transform_image`)
+- *"Edit this banner — add a glowing cyan halo around the logo."* (`tool_edit_image`, `EDIT_MODE_DEFAULT`)
+- *"Transform this photo into a hand-drawn pencil sketch."* (`tool_transform_image`)
 - *"Remove the background from the image I just generated."*
 - *"Analyze this image and tell me what objects are present."*
+- *"Generate 8 product shots in parallel with different backgrounds."* (`tool_batch_generate`)
+- *"Run a pipeline: generate → remove background → upscale."* (`tool_run_pipeline`)
+- *"Convert this text to speech using the Kore voice."* (`tool_generate_speech`)
+- *"Generate a 30-second ambient music track."* (`tool_generate_music`)
+- *"Embed this sentence for semantic search."* (`tool_embed`)
+- *"Animate this product photo into a 5-second video."* (`tool_image_to_video`)
 
 ---
 
 ## Author & License
 
 - **Developer:** Mirac Orhan (<mirac.orhan@gmail.com>)
-- **License:** [MIT License](LICENSE) (Open Source - Free for everyone to use, modify, and distribute)
-
+- **License:** [MIT License](LICENSE) (Open Source — Free for everyone to use, modify, and distribute)
