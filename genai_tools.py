@@ -2,6 +2,7 @@
 # License: Open Source (MIT License)
 import asyncio
 import functools
+import json
 import os
 import threading
 import time
@@ -32,6 +33,40 @@ _DEPENDENCY_ERROR = {
 }
 
 
+def _build_adc_credentials():
+    """Read ADC JSON and build Credentials with refresh_token, bypassing RAPT reauth."""
+    adc_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if not adc_path:
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            adc_path = os.path.join(appdata, "gcloud", "application_default_credentials.json")
+    if not adc_path or not os.path.exists(adc_path):
+        return None
+    try:
+        with open(adc_path, encoding="utf-8") as f:
+            adc = json.load(f)
+        if adc.get("type") != "authorized_user":
+            return None
+        from google.oauth2.credentials import Credentials
+        return Credentials(
+            token=None,
+            refresh_token=adc["refresh_token"],
+            client_id=adc["client_id"],
+            client_secret=adc["client_secret"],
+            token_uri="https://oauth2.googleapis.com/token",
+        )
+    except Exception as e:
+        logger.info(f"[genai] ADC credential build skipped ({type(e).__name__}: {e})")
+        return None
+
+
+def _reset_genai_client():
+    """Reset cached client so next call rebuilds it (e.g. after auth error)."""
+    global _genai_client
+    with _genai_client_lock:
+        _genai_client = None
+
+
 def _get_genai_client():
     global _genai_client
     if _genai_client is not None:
@@ -53,10 +88,14 @@ def _get_genai_client():
                     "GOOGLE_CLOUD_PROJECT not set. "
                     "Required for Vertex AI backend of google-genai SDK."
                 )
-            _genai_client = google_genai.Client(
-                vertexai=True, project=PROJECT_ID, location=LOCATION
-            )
-            logger.info(f"[genai] Initialized Vertex AI backend (project={PROJECT_ID}, location={LOCATION})")
+            creds = _build_adc_credentials()
+            kwargs = {"vertexai": True, "project": PROJECT_ID, "location": LOCATION}
+            if creds is not None:
+                kwargs["credentials"] = creds
+                logger.info(f"[genai] Initialized Vertex AI backend with ADC credentials (project={PROJECT_ID})")
+            else:
+                logger.info(f"[genai] Initialized Vertex AI backend with default ADC (project={PROJECT_ID})")
+            _genai_client = google_genai.Client(**kwargs)
         return _genai_client
 
 
@@ -96,6 +135,8 @@ async def embed(text: str, model: Optional[str] = None) -> Dict[str, Any]:
             "duration_s": round(time.time() - t0, 2),
         }
     except Exception as e:
+        if "RefreshError" in type(e).__name__ or "RefreshError" in type(e).__qualname__:
+            _reset_genai_client()
         logger.error(f"[embed] FAIL | {type(e).__name__}: {e}")
         return {"success": False, "error": {"code": type(e).__name__, "message": str(e)}}
 
@@ -167,6 +208,8 @@ async def analyze_video(
             "duration_s": round(time.time() - t0, 2),
         }
     except Exception as e:
+        if "RefreshError" in type(e).__name__ or "RefreshError" in type(e).__qualname__:
+            _reset_genai_client()
         logger.error(f"[analyze_video] FAIL | {type(e).__name__}: {e}")
         return {"success": False, "error": {"code": type(e).__name__, "message": str(e)}}
 
@@ -232,6 +275,8 @@ async def generate_speech(
             "duration_s": round(time.time() - t0, 2),
         }
     except Exception as e:
+        if "RefreshError" in type(e).__name__ or "RefreshError" in type(e).__qualname__:
+            _reset_genai_client()
         logger.error(f"[generate_speech] FAIL | {type(e).__name__}: {e}")
         return {"success": False, "error": {"code": type(e).__name__, "message": str(e)}}
 
@@ -272,5 +317,7 @@ async def live_generate(
             "duration_s": round(time.time() - t0, 2),
         }
     except Exception as e:
+        if "RefreshError" in type(e).__name__ or "RefreshError" in type(e).__qualname__:
+            _reset_genai_client()
         logger.error(f"[live_generate] FAIL | {type(e).__name__}: {e}")
         return {"success": False, "error": {"code": type(e).__name__, "message": str(e)}}
