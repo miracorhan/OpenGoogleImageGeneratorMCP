@@ -889,6 +889,21 @@ async def transform_image(
         return {"success": False, "error": _build_unexpected_error(model_name, ":generateContent", e, time.time() - t0)}
 
 
+_THINKING_BUDGET_MAP = {
+    "MINIMAL": 0,
+    "LOW": 512,
+    "MEDIUM": 2048,
+    "HIGH": 8192,
+}
+
+_MEDIA_RESOLUTION_MAP = {
+    "LOW": "MEDIA_RESOLUTION_LOW",
+    "MEDIUM": "MEDIA_RESOLUTION_MEDIUM",
+    "HIGH": "MEDIA_RESOLUTION_HIGH",
+    "ULTRA_HIGH": "MEDIA_RESOLUTION_HIGH",
+}
+
+
 async def analyze_image(
     prompt: str,
     image_path: str,
@@ -898,29 +913,39 @@ async def analyze_image(
     media_resolution: str = "MEDIUM",
 ) -> Dict[str, Any]:
     t0 = time.time()
-    logger.info(f"[analyze_image] START | model={model_name} | image={image_path}")
+    logger.info(f"[analyze_image] START | model={model_name} | image={image_path} | thinking={thinking_level} | res={media_resolution}")
     try:
         if not os.path.exists(image_path):
             return {"success": False, "error": _build_validation_error(f"Image not found: {image_path}")}
 
-        with open(image_path, "rb") as f:
-            image_data = f.read()
         mime = _mime_for_path(image_path)
+        contents = [{"role": "user", "parts": [
+            {"inlineData": {"mimeType": mime, "data": _read_image_b64(image_path)}},
+            {"text": prompt},
+        ]}]
 
-        model = await _get_gemini_model(model_name)
-        image_part = Part.from_data(mime_type=mime, data=image_data)
+        budget = _THINKING_BUDGET_MAP.get(thinking_level.upper(), _THINKING_BUDGET_MAP["HIGH"])
+        generation_config: Dict[str, Any] = {
+            "thinkingConfig": {"thinkingBudget": budget},
+            "mediaResolution": _MEDIA_RESOLUTION_MAP.get(media_resolution.upper(), "MEDIA_RESOLUTION_MEDIUM"),
+        }
 
-        response = await asyncio.wait_for(
-            model.generate_content_async(
-                [image_part, prompt],
-                safety_settings=safety_settings,
-                generation_config=GenerationConfig(temperature=1.0),
-            ),
-            timeout=API_TIMEOUT,
+        response = await _to_thread(
+            _gemini_generate_content, model_name, contents, generation_config, timeout=API_TIMEOUT
         )
-        logger.info(f"[analyze_image] SUCCESS in {time.time()-t0:.1f}s")
-        return {"success": True, "analysis": response.text}
 
+        analysis = _extract_gemini_text(response)
+        if analysis is None:
+            return {"success": False, "error": _build_unexpected_error(
+                model_name, ":generateContent",
+                ValueError(f"No text in response. Keys: {list(response.keys())}"),
+                time.time() - t0,
+            )}
+        logger.info(f"[analyze_image] SUCCESS in {time.time()-t0:.1f}s")
+        return {"success": True, "analysis": analysis}
+
+    except VertexAPIError as e:
+        return {"success": False, "error": e.error_dict}
     except asyncio.TimeoutError:
         return {"success": False, "error": _build_timeout_error(model_name, ":generateContent", time.time() - t0)}
     except Exception as e:

@@ -303,17 +303,20 @@ def test_validation_error_structure():
 # ---- analyze / upscale / remove_background (regression) --------------------
 
 @pytest.mark.asyncio
-@patch("vertex_ai_tools.GenerativeModel")
-async def test_analyze_image_success(mock_gen_model, tmp_path):
+@patch("vertex_ai_tools._gemini_generate_content")
+async def test_analyze_image_success(mock_generate, tmp_path):
     img_path = tmp_path / "test.jpg"; img_path.write_bytes(b"fake-data")
-    mock_instance = MagicMock()
-    mock_response = MagicMock(); mock_response.text = "This is a cat."
-    mock_instance.generate_content_async = AsyncMock(return_value=mock_response)
-    mock_gen_model.return_value = mock_instance
+    mock_generate.return_value = {
+        "candidates": [{"content": {"parts": [{"text": "This is a cat."}]}}]
+    }
 
     result = await analyze_image(prompt="what is this?", image_path=str(img_path))
     assert result["success"] is True
     assert result["analysis"] == "This is a cat."
+    call_args = mock_generate.call_args
+    gen_cfg = call_args[0][2]
+    assert "thinkingConfig" in gen_cfg
+    assert "mediaResolution" in gen_cfg
 
 
 @pytest.mark.asyncio
