@@ -87,6 +87,11 @@ _gemini_model_cache: Dict[str, Any] = {}
 _cached_token: Optional[str] = None
 _cached_token_expiry: float = 0.0  # epoch seconds
 
+# Global semaphore: max concurrent Vertex AI / Gemini API calls across all tools
+_API_SEMAPHORE = asyncio.Semaphore(2)
+_MAX_RETRIES = 3
+_RETRY_BASE_DELAY = 5.0  # seconds; doubles each attempt (5 → 10 → 20)
+
 
 def _is_imagen_model(model_name: str) -> bool:
     return model_name.startswith("imagen") or model_name.startswith("imagegeneration")
@@ -137,6 +142,28 @@ async def _to_thread(func, *args, timeout: float = API_TIMEOUT, **kwargs):
     if not done:
         raise asyncio.TimeoutError()
     return future.result()  # re-raises any exception the thread raised
+
+
+async def _api_call_with_retry(func, *args, timeout: float = API_TIMEOUT, **kwargs):
+    """Run a sync Vertex AI call in a thread with a global semaphore and 429 cooldown retry."""
+    last_error: Optional[VertexAPIError] = None
+    for attempt in range(_MAX_RETRIES + 1):
+        if attempt > 0:
+            delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))  # 5 → 10 → 20 s
+            logger.warning(
+                f"[rate_limit] 429 cooldown: waiting {delay:.0f}s before retry "
+                f"{attempt}/{_MAX_RETRIES} for {func.__name__}"
+            )
+            await asyncio.sleep(delay)
+        async with _API_SEMAPHORE:
+            try:
+                return await _to_thread(func, *args, timeout=timeout, **kwargs)
+            except VertexAPIError as e:
+                if e.error_dict.get("code") == 429 and attempt < _MAX_RETRIES:
+                    last_error = e
+                    continue
+                raise
+    raise last_error  # exhausted retries
 
 
 def _resolve_gcloud_path() -> str:
@@ -575,7 +602,7 @@ async def generate_image(
             "instances": [{"prompt": prompt}],
             "parameters": parameters,
         }
-        response = await _to_thread(_imagen_predict, model_name, payload, timeout=API_TIMEOUT)
+        response = await _api_call_with_retry(_imagen_predict, model_name, payload, timeout=API_TIMEOUT)
         images = _extract_image_bytes_list(response)
         if not images:
             return {"success": False, "error": _build_unexpected_error(
@@ -634,7 +661,7 @@ async def gemini_generate_image(
         contents = [{"role": "user", "parts": [{"text": prompt}]}]
         generation_config = {"responseModalities": ["IMAGE", "TEXT"]}
 
-        response = await _to_thread(
+        response = await _api_call_with_retry(
             _gemini_generate_content, model_name, contents, generation_config, timeout=API_TIMEOUT
         )
         image_bytes = _extract_gemini_image_bytes(response)
@@ -762,7 +789,7 @@ async def edit_image(
 
         payload = {"instances": [instance], "parameters": parameters}
 
-        response = await _to_thread(_imagen_predict, model_name, payload, timeout=API_TIMEOUT)
+        response = await _api_call_with_retry(_imagen_predict, model_name, payload, timeout=API_TIMEOUT)
         images = _extract_image_bytes_list(response)
         if not images:
             return {"success": False, "error": _build_unexpected_error(
@@ -850,7 +877,7 @@ async def transform_image(
         contents = [{"role": "user", "parts": parts}]
         generation_config = {"responseModalities": ["IMAGE", "TEXT"]}
 
-        response = await _to_thread(
+        response = await _api_call_with_retry(
             _gemini_generate_content, model_name, contents, generation_config, timeout=API_TIMEOUT
         )
         image_bytes = _extract_gemini_image_bytes(response)
@@ -930,7 +957,7 @@ async def analyze_image(
             "mediaResolution": _MEDIA_RESOLUTION_MAP.get(media_resolution.upper(), "MEDIA_RESOLUTION_MEDIUM"),
         }
 
-        response = await _to_thread(
+        response = await _api_call_with_retry(
             _gemini_generate_content, model_name, contents, generation_config, timeout=API_TIMEOUT
         )
 
@@ -973,7 +1000,7 @@ async def upscale_image(
             "instances": [{"prompt": "", "image": {"bytesBase64Encoded": base_b64}}],
             "parameters": {"sampleCount": 1, "mode": "upscale", "upscaleConfig": {"upscaleFactor": "x2"}},
         }
-        response = await _to_thread(_imagen_predict, model_name, payload, timeout=UPSCALE_TIMEOUT)
+        response = await _api_call_with_retry(_imagen_predict, model_name, payload, timeout=UPSCALE_TIMEOUT)
         images = _extract_image_bytes_list(response)
         if not images:
             return {"success": False, "error": _build_unexpected_error(
@@ -1034,7 +1061,7 @@ async def remove_background(
             }],
             "parameters": {"sampleCount": 1, "editMode": "EDIT_MODE_BGSWAP"},
         }
-        response = await _to_thread(_imagen_predict, model_name, payload, timeout=API_TIMEOUT)
+        response = await _api_call_with_retry(_imagen_predict, model_name, payload, timeout=API_TIMEOUT)
         images = _extract_image_bytes_list(response)
         if not images:
             return {"success": False, "error": _build_unexpected_error(
