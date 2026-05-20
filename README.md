@@ -41,7 +41,7 @@ This project is a Model Context Protocol (MCP) server that exposes Google Cloud 
 | Tool | Description | Backend |
 |---|---|---|
 | `tool_embed` | Text embeddings as float vectors | Gemini Embedding (`text-embedding-004` on Vertex AI, `gemini-embedding-2` on Gemini API) |
-| `tool_live_generate` | Streaming text generation — response is accumulated and returned in full | Gemini Live (`gemini-2.5-flash` / `gemini-3.1-pro`) |
+| `tool_live_generate` | Streaming text generation — response is accumulated and returned in full | Gemini Live (`gemini-3.5-flash` / `gemini-2.5-pro`) |
 
 ### Utility Tools
 
@@ -87,10 +87,22 @@ Most tools accept a `model_tier` parameter:
 
 | Tier | `tool_generate_image` | `tool_transform_image` | `tool_generate_video` |
 |---|---|---|---|
-| `fast` | `imagen-4.0-fast-generate-001` | `gemini-2.5-flash-image` | `veo-3.1-fast-generate-001` |
-| `balanced` | `gemini-2.5-flash-image` | `gemini-2.5-flash-image` | `veo-3.1-fast-generate-001` |
+| `fast` | `imagen-4.0-fast-generate-001` | `gemini-2.5-flash-image` ¹ | `veo-3.1-fast-generate-001` |
+| `balanced` | `gemini-2.5-flash-image` ¹ | `gemini-2.5-flash-image` ¹ | `veo-3.1-fast-generate-001` |
 | `quality` | `imagen-4.0-generate-001` | `gemini-2.5-pro-image` | `veo-3.1-generate-001` |
 | `ultra` | `imagen-4.0-ultra-generate-001` | `gemini-2.5-pro-image` | `veo-3.1-generate-001` |
+
+**GenAI SDK tools** (`tool_live_generate`, `tool_analyze_video`, `tool_generate_speech`, `tool_embed`):
+
+| Tier | `tool_live_generate` / `tool_analyze_video` | `tool_generate_speech` | `tool_embed` |
+|---|---|---|---|
+| `fast` | `gemini-3.5-flash` ¹ | `gemini-2.5-flash-preview-tts` | `gemini-embedding-2` / `text-embedding-004` ² |
+| `quality` | `gemini-2.5-pro` | `gemini-2.5-pro-preview-tts` | — |
+
+> ¹ **Generally Available** as of May 2026 per [Google Models docs](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/google-models.md.txt).
+> ² `gemini-embedding-2` is used when `GOOGLE_CLOUD_API_KEY` is set; `text-embedding-004` is used with Vertex AI ADC.
+>
+> **Preview models** available but not set as defaults: `gemini-3.1-pro`, `gemini-3.1-flash-image`, `gemini-3-flash`, `gemini-3-pro-image`. Pass them via the `model` / `model_name` override parameter. See [full model list](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/google-models.md.txt) for the latest.
 
 ### Output formats
 
@@ -152,9 +164,12 @@ Full request/response logs are written to `logs/vertex_ai_mcp.log`.
 3. **Vertex AI API** enabled in your project
 4. **Google Cloud CLI (`gcloud`)** installed and configured
 
-For GenAI SDK tools (`tool_embed`, `tool_analyze_video`, `tool_generate_speech`, `tool_live_generate`, `tool_generate_music`), you additionally need either:
-- A **Gemini API key** (`GOOGLE_GENAI_API_KEY`), or
-- Vertex AI ADC credentials with `GOOGLE_GENAI_BACKEND=vertexai`
+For GenAI SDK tools (`tool_embed`, `tool_analyze_video`, `tool_generate_speech`, `tool_live_generate`, `tool_generate_music`), you additionally need one of:
+- A **Cloud API Key** (`GOOGLE_CLOUD_API_KEY`) — created in GCP Console, uses your existing GCP billing. Enables newer models like `gemini-3.5-flash`. *(Recommended)*
+- A **Gemini API key** (`GOOGLE_GENAI_API_KEY`) — from [AI Studio](https://aistudio.google.com/apikey), separate billing.
+- **Vertex AI ADC** — set `GOOGLE_GENAI_BACKEND=vertexai`, uses `gcloud auth application-default login`.
+
+> **Cloud API Key setup:** Run `gcloud services enable generativelanguage.googleapis.com apikeys.googleapis.com` then `gcloud services api-keys create --display-name="GeminiKey"`. The key string appears in the command output — copy it directly to `.env`.
 
 ---
 
@@ -197,11 +212,17 @@ GOOGLE_CLOUD_LOCATION=us-central1
 DEFAULT_OUTPUT_DIR=./outputs
 
 # --- GenAI SDK (for embed, speech, live, music, video-analysis tools) ---
-# Option A: Gemini API key (free tier available)
-GOOGLE_GENAI_API_KEY=AIza...
+# Option A: Cloud API Key (recommended — uses GCP billing, enables gemini-3.5-flash)
+# Create: gcloud services enable generativelanguage.googleapis.com apikeys.googleapis.com
+#         gcloud services api-keys create --display-name="GeminiKey"
+GOOGLE_CLOUD_API_KEY=AIza...
 
-# Option B: Use Vertex AI backend (uses ADC above, no separate key needed)
-GOOGLE_GENAI_BACKEND=vertexai
+# Option B: Gemini API key (AI Studio, separate billing, free tier available)
+# GOOGLE_GENAI_BACKEND=gemini_api
+# GOOGLE_GENAI_API_KEY=AIza...
+
+# Option C: Vertex AI ADC (no key needed, uses gcloud auth application-default login)
+# GOOGLE_GENAI_BACKEND=vertexai
 
 # --- Advanced Vertex AI Authentication (Optional) ---
 # Direct OAuth 2.0 Access Token
@@ -257,6 +278,23 @@ python mcp_server.py
 - *"Embed this sentence for semantic search."* (`tool_embed`)
 - *"Animate this product photo into a 5-second video."* (`tool_image_to_video`)
 - *"Generate a video of a sunset with audio."* (`tool_generate_video`, `audio_enabled=true`)
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `RefreshError` / "Reauthentication needed" | ADC token expired | `gcloud auth application-default login` |
+| `available: {}` from `tool_list_available_models` | Same ADC expiry, probe skipped | Re-authenticate (above) |
+| `401 UNAUTHENTICATED` with `GOOGLE_CLOUD_API_KEY` | Key used with Vertex AI endpoint (rejects keys) | Ensure `GOOGLE_GENAI_BACKEND` is **not** set to `vertexai` when using a Cloud API key |
+| `403 PERMISSION_DENIED` — "Gemini API has not been used" | `generativelanguage.googleapis.com` not enabled | `gcloud services enable generativelanguage.googleapis.com` |
+| `403 PERMISSION_DENIED` — "API Keys API disabled" | `apikeys.googleapis.com` blocked by org policy | `gcloud services enable apikeys.googleapis.com` |
+| `404 NOT_FOUND` for `text-embedding-004` | Vertex AI embedding model not available on Gemini API endpoint | Set `GOOGLE_CLOUD_API_KEY` (auto-selects `gemini-embedding-2`) or use ADC |
+| `404 NOT_FOUND` for a model | Model not available in your project/region | Run `tool_list_available_models` and pick from `available` list |
+| `gcloud api-keys` command not found | Wrong command prefix | Use `gcloud services api-keys list/create/delete` |
+
+> **Security:** The Cloud API Key string appears in plaintext in `gcloud services api-keys create` output. Copy it directly to `.env` — never paste it into a chat, commit, or log. Revoke a leaked key immediately with `gcloud services api-keys delete KEY_ID`.
 
 ---
 

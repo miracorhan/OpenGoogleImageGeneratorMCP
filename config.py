@@ -41,6 +41,10 @@ os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
 # Google GenAI SDK settings
 GOOGLE_GENAI_API_KEY = os.environ.get("GOOGLE_GENAI_API_KEY")
 GOOGLE_GENAI_BACKEND = os.environ.get("GOOGLE_GENAI_BACKEND", "vertex_ai")
+# Cloud API Key for Vertex AI (enables newer models like gemini-3.5-flash).
+# Create at: Google Cloud Console → APIs & Services → Credentials → Create API Key
+# Uses your existing GCP project billing — no separate AI Studio account needed.
+GOOGLE_CLOUD_API_KEY = os.environ.get("GOOGLE_CLOUD_API_KEY")
 
 
 def check_for_updates() -> dict:

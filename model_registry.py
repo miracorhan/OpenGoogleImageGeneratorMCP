@@ -57,11 +57,11 @@ SPEECH_MODELS = {
 }
 
 VIDEO_ANALYZE_MODELS = {
-    "fast": "gemini-2.5-flash",
-    "quality": "gemini-3.1-pro",
+    "fast": "gemini-3.5-flash",
+    "quality": "gemini-2.5-pro",
 }
 
 LIVE_MODELS = {
-    "fast": "gemini-2.5-flash",
-    "quality": "gemini-3.1-pro",
+    "fast": "gemini-3.5-flash",
+    "quality": "gemini-2.5-pro",
 }

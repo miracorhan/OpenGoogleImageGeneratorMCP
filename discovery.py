@@ -24,22 +24,19 @@ def get_recommended_models():
     until enabled — use tool_list_available_models for the live-verified set."""
     return {
         "text": [
+            "gemini-3.5-flash",
+            "gemini-3.1-pro",
+            "gemini-3-flash",
+            "gemini-3.1-flash-lite",
             "gemini-2.5-pro",
             "gemini-2.5-flash",
             "gemini-2.5-flash-lite",
-            # Newer Gemini 3.x variants documented on
-            # https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/google-models
-            # may not be reachable in every project — probe before relying on them.
-            "gemini-3.1-pro",
-            "gemini-3-pro",
-            "gemini-3-flash",
-            "gemini-3.1-flash-lite",
         ],
         "vision": [
+            "gemini-3.5-flash",
+            "gemini-3.1-pro",
             "gemini-2.5-pro",
             "gemini-2.5-flash",
-            "gemini-3.1-pro",
-            "gemini-3-pro",
         ],
         "image_generation": [
             "imagen-4.0-fast-generate-001",
@@ -54,9 +51,11 @@ def get_recommended_models():
             "gemini-3-pro-image",
         ],
         "video_generation": [
-            "veo-3.1-fast-generate-001",
             "veo-3.1-generate-001",
+            "veo-3.1-fast-generate-001",
+            "veo-3.1-lite-generate-001",
             "veo-3.0-generate-001",
+            "veo-3.0-fast-generate-001",
             "veo-2.0-generate-001",
         ],
         "embedding": [
@@ -68,7 +67,9 @@ def get_recommended_models():
             "gemini-2.5-pro-preview-tts",
         ],
         "live_text": [
-            "gemini-2.5-flash",
+            "gemini-3.5-flash",
             "gemini-3.1-pro",
+            "gemini-2.5-flash-live-api",
+            "gemini-2.5-flash",
         ],
     }

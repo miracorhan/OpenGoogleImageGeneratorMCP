@@ -71,7 +71,7 @@ async def tool_list_available_models(force_refresh: bool = False) -> dict:
     available = await asyncio.to_thread(probe_available_models, force_refresh)
     cached = get_cached_availability()
     update_info = await asyncio.to_thread(check_for_updates)
-    return {
+    response: dict = {
         "available": available,
         "recommended": get_recommended_models(),
         "checked_at": cached.get("checked_at"),
@@ -80,6 +80,9 @@ async def tool_list_available_models(force_refresh: bool = False) -> dict:
         "duration_s": round(_t.time() - t0, 2),
         "update": update_info,
     }
+    if cached.get("auth_error"):
+        response["warning"] = cached["auth_error"]
+    return response
 
 class GenerateImageParams(BaseModel):
     prompt: str = Field(..., description="The text description of the image to generate.")
@@ -600,7 +603,7 @@ class GenerateMusicParams(BaseModel):
     prompt: str = Field(..., description="Text description of the music to generate.")
     output_filename: Optional[str] = Field(None, description="Output filename (e.g. track.mp3). Required if output_path not given.")
     output_path: Optional[str] = Field(None, description="Absolute output file path.")
-    model_name: Literal["lyria-2", "lyria-3"] = Field("lyria-2", description="Lyria model version.")
+    model_name: Literal["lyria-2", "lyria-3-pro", "lyria-3-clip"] = Field("lyria-2", description="Lyria model version. lyria-3-pro: highest quality; lyria-3-clip: short clips.")
     duration: Optional[int] = Field(None, description="Desired music duration in seconds (optional).")
 
 @mcp.tool()
@@ -639,7 +642,7 @@ async def tool_embed(params: EmbedParams) -> dict:
 class AnalyzeVideoParams(BaseModel):
     video_path: str = Field(..., description="Absolute path to the local video file (max 20MB). Supported: mp4, mov, avi, webm, mkv.")
     prompt: str = Field(..., description="The question or analysis instruction about the video.")
-    model_tier: Literal["fast", "quality"] = Field("fast", description="fast → gemini-2.5-flash, quality → gemini-3.1-pro.")
+    model_tier: Literal["fast", "quality"] = Field("fast", description="fast → gemini-3.5-flash, quality → gemini-3.1-pro.")
     model: Optional[str] = Field(None, description="Override the model name directly.")
 
 @mcp.tool()
@@ -680,7 +683,7 @@ async def tool_generate_speech(params: GenerateSpeechParams) -> dict:
 
 class LiveGenerateParams(BaseModel):
     prompt: str = Field(..., description="The text prompt to send to Gemini streaming.")
-    model_tier: Literal["fast", "quality"] = Field("fast", description="fast → gemini-2.5-flash, quality → gemini-3.1-pro.")
+    model_tier: Literal["fast", "quality"] = Field("fast", description="fast → gemini-3.5-flash, quality → gemini-3.1-pro.")
     model: Optional[str] = Field(None, description="Override the model name directly.")
 
 @mcp.tool()

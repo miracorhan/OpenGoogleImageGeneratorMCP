@@ -63,10 +63,12 @@ _PROBE_CANDIDATES: Tuple[Tuple[str, str, str], ...] = (
     ("gemini-3-flash",                 ":generateContent", "image_transformation"),
     ("gemini-2.5-flash-image",         ":generateContent", "image_transformation"),
     ("gemini-2.5-flash-image-preview", ":generateContent", "image_transformation"),
+    ("gemini-3.5-flash",               ":generateContent", "text"),
     ("gemini-3.1-pro",                 ":generateContent", "text"),
     ("gemini-3-pro",                   ":generateContent", "text"),
     ("gemini-2.5-pro",                 ":generateContent", "text"),
     ("gemini-2.5-flash",               ":generateContent", "text"),
+    ("gemini-2.5-flash-live-api",      ":generateContent", "text"),
     ("gemini-3.1-flash-lite",          ":generateContent", "text"),
     ("gemini-2.5-flash-lite",          ":generateContent", "text"),
 )
@@ -74,6 +76,12 @@ _PROBE_CANDIDATES: Tuple[Tuple[str, str, str], ...] = (
 # Modules-scope cache: {category: [available model names]}
 _AVAILABLE_MODELS_CACHE: Dict[str, List[str]] = {}
 _AVAILABLE_MODELS_CACHE_AT: Optional[str] = None
+_PROBE_AUTH_ERROR: Optional[str] = None  # set when probe fails due to expired credentials
+
+_AUTH_EXPIRED_HINT = (
+    "Google credentials have expired. "
+    "Re-authenticate by running: gcloud auth application-default login"
+)
 
 _gemini_model_cache: Dict[str, Any] = {}
 _cached_token: Optional[str] = None
@@ -469,9 +477,19 @@ def _probe_one(model_name: str, endpoint: str) -> bool:
 def probe_available_models(force: bool = False) -> Dict[str, List[str]]:
     """Probe all candidate models, return {category: [available]}.
     Caches the result for the process lifetime."""
-    global _AVAILABLE_MODELS_CACHE, _AVAILABLE_MODELS_CACHE_AT
+    global _AVAILABLE_MODELS_CACHE, _AVAILABLE_MODELS_CACHE_AT, _PROBE_AUTH_ERROR
     if _AVAILABLE_MODELS_CACHE and not force:
         return _AVAILABLE_MODELS_CACHE
+    # Quick auth pre-check: if we can't get a token, skip the scan entirely.
+    try:
+        _get_access_token()
+        _PROBE_AUTH_ERROR = None
+    except Exception as e:
+        _PROBE_AUTH_ERROR = _AUTH_EXPIRED_HINT
+        logger.warning(f"[probe] auth pre-check failed — skipping scan: {e}")
+        _AVAILABLE_MODELS_CACHE = {}
+        _AVAILABLE_MODELS_CACHE_AT = datetime.now(timezone.utc).isoformat()
+        return {}
     t0 = time.time()
     logger.info(f"[probe] starting model availability scan ({len(_PROBE_CANDIDATES)} candidates) ...")
     result: Dict[str, List[str]] = {}
@@ -493,10 +511,13 @@ def probe_available_models(force: bool = False) -> Dict[str, List[str]]:
 
 
 def get_cached_availability() -> Dict[str, Any]:
-    return {
+    result: Dict[str, Any] = {
         "available": dict(_AVAILABLE_MODELS_CACHE),
         "checked_at": _AVAILABLE_MODELS_CACHE_AT,
     }
+    if _PROBE_AUTH_ERROR:
+        result["auth_error"] = _PROBE_AUTH_ERROR
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1236,7 +1257,7 @@ async def upload_file(
     }
 
 
-_SUPPORTED_MUSIC_MODELS = ("lyria-2", "lyria-3")
+_SUPPORTED_MUSIC_MODELS = ("lyria-2", "lyria-3-pro", "lyria-3-clip")
 
 
 async def generate_music(

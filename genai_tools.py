@@ -9,7 +9,7 @@ import threading
 import time
 from typing import Any, Dict, Optional
 
-from config import logger, PROJECT_ID, LOCATION, GOOGLE_GENAI_API_KEY, GOOGLE_GENAI_BACKEND
+from config import logger, PROJECT_ID, LOCATION, GOOGLE_GENAI_API_KEY, GOOGLE_GENAI_BACKEND, GOOGLE_CLOUD_API_KEY
 
 try:
     import google.genai as google_genai
@@ -82,6 +82,23 @@ def _reset_genai_client():
         _genai_client = None
 
 
+_AUTH_HINT = (
+    "Google credentials have expired. "
+    "Re-authenticate by running: gcloud auth application-default login"
+)
+
+
+def _handle_genai_error(e: Exception, tag: str) -> dict:
+    """Log the error, reset client on RefreshError, return a failure dict."""
+    is_refresh = "RefreshError" in type(e).__name__ or "RefreshError" in type(e).__qualname__
+    if is_refresh:
+        _reset_genai_client()
+        logger.error(f"[{tag}] FAIL | credentials expired (RefreshError)")
+        return {"success": False, "error": {"code": "RefreshError", "message": _AUTH_HINT}}
+    logger.error(f"[{tag}] FAIL | {type(e).__name__}: {e}")
+    return {"success": False, "error": {"code": type(e).__name__, "message": str(e)}}
+
+
 def _get_genai_client():
     global _genai_client
     if _genai_client is not None:
@@ -96,7 +113,12 @@ def _get_genai_client():
             )
         if GOOGLE_GENAI_BACKEND == "gemini_api" and GOOGLE_GENAI_API_KEY:
             _genai_client = google_genai.Client(api_key=GOOGLE_GENAI_API_KEY)
-            logger.info("[genai] Initialized with Gemini API key")
+            logger.info("[genai] Initialized with Gemini API key (gemini_api backend)")
+        elif GOOGLE_CLOUD_API_KEY:
+            # Cloud API Key (from GCP Console) — uses Gemini API endpoint (generativelanguage.googleapis.com).
+            # aiplatform.googleapis.com rejects API keys; only OAuth works there.
+            _genai_client = google_genai.Client(api_key=GOOGLE_CLOUD_API_KEY)
+            logger.info("[genai] Initialized with Cloud API Key (Gemini API endpoint)")
         else:
             if not PROJECT_ID:
                 raise RuntimeError(
@@ -129,9 +151,8 @@ async def embed(text: str, model: Optional[str] = None) -> Dict[str, Any]:
         return _DEPENDENCY_ERROR
     from model_registry import EMBED_MODEL_VERTEX, EMBED_MODEL_GEMINI_API
     t0 = time.time()
-    model_name = model or (
-        EMBED_MODEL_GEMINI_API if GOOGLE_GENAI_BACKEND == "gemini_api" else EMBED_MODEL_VERTEX
-    )
+    use_gemini_api = GOOGLE_GENAI_BACKEND == "gemini_api" or bool(GOOGLE_CLOUD_API_KEY)
+    model_name = model or (EMBED_MODEL_GEMINI_API if use_gemini_api else EMBED_MODEL_VERTEX)
     logger.info(f"[embed] START | model={model_name} | text_len={len(text)}")
     try:
         def _do_request():
@@ -150,10 +171,7 @@ async def embed(text: str, model: Optional[str] = None) -> Dict[str, Any]:
             "duration_s": round(time.time() - t0, 2),
         }
     except Exception as e:
-        if "RefreshError" in type(e).__name__ or "RefreshError" in type(e).__qualname__:
-            _reset_genai_client()
-        logger.error(f"[embed] FAIL | {type(e).__name__}: {e}")
-        return {"success": False, "error": {"code": type(e).__name__, "message": str(e)}}
+        return _handle_genai_error(e, "embed")
 
 
 def _video_mime_type(path: str) -> str:
@@ -223,10 +241,7 @@ async def analyze_video(
             "duration_s": round(time.time() - t0, 2),
         }
     except Exception as e:
-        if "RefreshError" in type(e).__name__ or "RefreshError" in type(e).__qualname__:
-            _reset_genai_client()
-        logger.error(f"[analyze_video] FAIL | {type(e).__name__}: {e}")
-        return {"success": False, "error": {"code": type(e).__name__, "message": str(e)}}
+        return _handle_genai_error(e, "analyze_video")
 
 
 async def generate_speech(
@@ -291,10 +306,7 @@ async def generate_speech(
             "duration_s": round(time.time() - t0, 2),
         }
     except Exception as e:
-        if "RefreshError" in type(e).__name__ or "RefreshError" in type(e).__qualname__:
-            _reset_genai_client()
-        logger.error(f"[generate_speech] FAIL | {type(e).__name__}: {e}")
-        return {"success": False, "error": {"code": type(e).__name__, "message": str(e)}}
+        return _handle_genai_error(e, "generate_speech")
 
 
 async def live_generate(
@@ -333,7 +345,4 @@ async def live_generate(
             "duration_s": round(time.time() - t0, 2),
         }
     except Exception as e:
-        if "RefreshError" in type(e).__name__ or "RefreshError" in type(e).__qualname__:
-            _reset_genai_client()
-        logger.error(f"[live_generate] FAIL | {type(e).__name__}: {e}")
-        return {"success": False, "error": {"code": type(e).__name__, "message": str(e)}}
+        return _handle_genai_error(e, "live_generate")
