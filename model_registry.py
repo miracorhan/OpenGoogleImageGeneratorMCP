@@ -65,3 +65,9 @@ LIVE_MODELS = {
     "fast": "gemini-3.5-flash",
     "quality": "gemini-2.5-pro",
 }
+
+MUSIC_MODELS = {
+    "lyria-3-pro":  "lyria-3-pro-preview",
+    "lyria-3-clip": "lyria-3-clip-preview",
+    "lyria-2":      "lyria-3-clip-preview",  # legacy alias
+}

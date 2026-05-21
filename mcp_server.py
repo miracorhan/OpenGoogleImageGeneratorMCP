@@ -16,7 +16,7 @@ from vertex_ai_tools import (
     generate_image, edit_image, transform_image, analyze_image,
     upscale_image, remove_background, generate_video, image_to_video,
     extend_video, video_object_edit, upload_file,
-    batch_generate, generate_music,
+    batch_generate,
     gemini_generate_image,
     probe_available_models, get_cached_availability,
     _validate_output_path,
@@ -620,6 +620,7 @@ async def tool_generate_music(params: GenerateMusicParams) -> dict:
     else:
         return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
 
+    from genai_tools import generate_music
     return await generate_music(
         prompt=params.prompt,
         output_path=final_path,

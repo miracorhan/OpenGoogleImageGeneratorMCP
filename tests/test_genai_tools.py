@@ -152,3 +152,124 @@ def test_available_voices_constant():
     assert "Kore" in AVAILABLE_VOICES
     assert "Aoede" in AVAILABLE_VOICES
     assert len(AVAILABLE_VOICES) == 5
+
+
+# ---- generate_music -------------------------------------------------------
+
+@pytest.mark.asyncio
+@patch("genai_tools._get_genai_client")
+async def test_generate_music_success(mock_get_client, tmp_path):
+    mock_client = MagicMock()
+    mock_get_client.return_value = mock_client
+
+    fake_mp3 = b"ID3\x03\x00\x00\x00fake-audio-bytes"
+    mock_part = MagicMock()
+    mock_part.inline_data = MagicMock()
+    mock_part.inline_data.data = fake_mp3
+    mock_part.inline_data.mime_type = "audio/mp3"
+    mock_response = MagicMock()
+    mock_response.parts = [mock_part]
+    mock_client.models.generate_content.return_value = mock_response
+
+    out = str(tmp_path / "track.mp3")
+    result = await genai_tools.generate_music(
+        prompt="calm piano",
+        output_path=out,
+        model_name="lyria-3-clip",
+        duration=30,
+    )
+
+    assert result["success"] is True
+    assert result["path"] == out
+    assert result["model"] == "lyria-3-clip-preview"
+    assert result["mime_type"] == "audio/mp3"
+    assert result["size_bytes"] == len(fake_mp3)
+    assert result["duration"] == 30
+    assert os.path.exists(out)
+    with open(out, "rb") as f:
+        assert f.read() == fake_mp3
+
+
+@pytest.mark.asyncio
+async def test_generate_music_invalid_model(tmp_path):
+    result = await genai_tools.generate_music(
+        prompt="jazz",
+        output_path=str(tmp_path / "track.mp3"),
+        model_name="lyria-99",
+    )
+    assert result["success"] is False
+    assert "lyria" in result["error"]["message"].lower()
+
+
+@pytest.mark.asyncio
+@patch("genai_tools._get_genai_client")
+async def test_generate_music_duration_in_prompt(mock_get_client, tmp_path):
+    mock_client = MagicMock()
+    mock_get_client.return_value = mock_client
+
+    fake_mp3 = b"fake"
+    mock_part = MagicMock()
+    mock_part.inline_data = MagicMock()
+    mock_part.inline_data.data = fake_mp3
+    mock_part.inline_data.mime_type = "audio/mp3"
+    mock_response = MagicMock()
+    mock_response.parts = [mock_part]
+    mock_client.models.generate_content.return_value = mock_response
+
+    await genai_tools.generate_music(
+        prompt="epic battle",
+        output_path=str(tmp_path / "track.mp3"),
+        model_name="lyria-3-pro",
+        duration=60,
+    )
+
+    call_args = mock_client.models.generate_content.call_args
+    sent_prompt = call_args[1]["contents"] if "contents" in call_args[1] else call_args[0][1]
+    assert "60" in sent_prompt
+    assert "epic battle" in sent_prompt
+
+
+@pytest.mark.asyncio
+@patch("genai_tools._get_genai_client")
+async def test_generate_music_no_audio_part(mock_get_client, tmp_path):
+    mock_client = MagicMock()
+    mock_get_client.return_value = mock_client
+
+    mock_part = MagicMock()
+    mock_part.inline_data = None
+    mock_response = MagicMock()
+    mock_response.parts = [mock_part]
+    mock_client.models.generate_content.return_value = mock_response
+
+    result = await genai_tools.generate_music(
+        prompt="ambient",
+        output_path=str(tmp_path / "track.mp3"),
+        model_name="lyria-3-clip",
+    )
+    assert result["success"] is False
+    assert result["error"]["code"] == "NO_AUDIO"
+
+
+@pytest.mark.asyncio
+@patch("genai_tools._get_genai_client")
+async def test_generate_music_lyria2_alias(mock_get_client, tmp_path):
+    """lyria-2 legacy alias routes to lyria-3-clip-preview."""
+    mock_client = MagicMock()
+    mock_get_client.return_value = mock_client
+
+    fake_mp3 = b"data"
+    mock_part = MagicMock()
+    mock_part.inline_data = MagicMock()
+    mock_part.inline_data.data = fake_mp3
+    mock_part.inline_data.mime_type = "audio/mp3"
+    mock_response = MagicMock()
+    mock_response.parts = [mock_part]
+    mock_client.models.generate_content.return_value = mock_response
+
+    result = await genai_tools.generate_music(
+        prompt="test",
+        output_path=str(tmp_path / "track.mp3"),
+        model_name="lyria-2",
+    )
+    assert result["success"] is True
+    assert result["model"] == "lyria-3-clip-preview"

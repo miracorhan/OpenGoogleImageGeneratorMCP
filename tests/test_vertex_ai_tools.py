@@ -651,31 +651,6 @@ async def test_batch_generate_partial_failure(tmp_path):
     assert result["results"][2]["success"] is True
 
 
-# ---- generate_music ----------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_generate_music_rejects_invalid_model():
-    result = await vertex_ai_tools.generate_music(
-        prompt="upbeat jazz",
-        output_path="/tmp/track.mp3",
-        model_name="lyria-99",
-    )
-    assert result["success"] is False
-    assert "lyria" in result["error"]["message"].lower()
-
-@pytest.mark.asyncio
-async def test_generate_music_success(tmp_path):
-    out = str(tmp_path / "track.mp3")
-    result = await vertex_ai_tools.generate_music(
-        prompt="calm piano",
-        output_path=out,
-        model_name="lyria-2",
-        duration=30,
-    )
-    assert result["success"] is True
-    assert result["path"] == out
-    assert result["duration"] == 30
-
 
 # ---- save_format (format conversion in gemini_generate_image) ----------
 

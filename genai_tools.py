@@ -346,3 +346,72 @@ async def live_generate(
         }
     except Exception as e:
         return _handle_genai_error(e, "live_generate")
+
+
+async def generate_music(
+    prompt: str,
+    output_path: str,
+    model_name: str = "lyria-3-clip",
+    duration: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Generate music from a text prompt using Lyria via GenAI SDK."""
+    if not _GENAI_AVAILABLE:
+        return _DEPENDENCY_ERROR
+    from model_registry import MUSIC_MODELS
+    t0 = time.time()
+
+    if model_name not in MUSIC_MODELS:
+        return {
+            "success": False,
+            "error": {
+                "code": "VALIDATION",
+                "message": f"Unsupported music model '{model_name}'. Use one of: {', '.join(MUSIC_MODELS)}",
+            },
+        }
+
+    api_model = MUSIC_MODELS[model_name]
+    full_prompt = prompt
+    if duration:
+        full_prompt = f"{prompt} [Duration: {duration} seconds]"
+
+    logger.info(f"[generate_music] START | model={api_model} | prompt='{full_prompt[:80]}'")
+    try:
+        def _do_request():
+            client = _get_genai_client()
+            return client.models.generate_content(model=api_model, contents=full_prompt)
+
+        response = await _to_thread(_do_request, timeout=120.0)
+
+        audio_data = None
+        mime_type = "audio/mp3"
+        for part in response.parts:
+            if part.inline_data is not None and part.inline_data.data:
+                audio_data = part.inline_data.data
+                mime_type = part.inline_data.mime_type or mime_type
+                break
+
+        if audio_data is None:
+            return {
+                "success": False,
+                "error": {
+                    "code": "NO_AUDIO",
+                    "message": "Lyria returned no audio data. The model may not be available in your project.",
+                },
+            }
+
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        with open(output_path, "wb") as f:
+            f.write(audio_data)
+
+        logger.info(f"[generate_music] SUCCESS in {time.time()-t0:.1f}s | path={output_path} | size={len(audio_data)}")
+        return {
+            "success": True,
+            "path": output_path,
+            "model": api_model,
+            "mime_type": mime_type,
+            "size_bytes": len(audio_data),
+            "duration": duration,
+            "duration_s": round(time.time() - t0, 2),
+        }
+    except Exception as e:
+        return _handle_genai_error(e, "generate_music")
