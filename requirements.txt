@@ -3,4 +3,4 @@ google-genai>=1.0.0
 mcp
 Pillow
 python-dotenv
-pydantic
+pydantic>=2.13.4
