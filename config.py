@@ -6,7 +6,7 @@ import sys
 import logging
 from dotenv import load_dotenv
 
-__version__ = "3.0.0"
+__version__ = "3.1.1"
 GITHUB_REPO = "miracorhan/OpenGoogleImageGeneratorMCP"
 
 # Load environment variables from .env file
