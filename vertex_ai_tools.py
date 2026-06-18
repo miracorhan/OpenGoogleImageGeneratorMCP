@@ -181,8 +181,8 @@ def _resolve_gcloud_path() -> str:
 
 
 def _try_adc_refresh_token() -> Optional[str]:
-    """Try direct refresh-token grant from ADC JSON. Returns None if unavailable
-    or if account requires gcloud-mediated reauth (invalid_rapt)."""
+    """Try direct token grant from ADC JSON (authorized_user or service_account).
+    Returns None if unavailable or if account requires gcloud-mediated reauth."""
     adc_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
     if not adc_path:
         appdata = os.environ.get("APPDATA")
@@ -193,19 +193,30 @@ def _try_adc_refresh_token() -> Optional[str]:
     try:
         with open(adc_path, "r", encoding="utf-8") as f:
             adc = json.load(f)
-        if adc.get("type") != "authorized_user":
-            return None
-        body = urllib.parse.urlencode({
-            "client_id": adc["client_id"],
-            "client_secret": adc["client_secret"],
-            "refresh_token": adc["refresh_token"],
-            "grant_type": "refresh_token",
-        }).encode("utf-8")
-        req = urllib.request.Request("https://oauth2.googleapis.com/token", data=body, method="POST")
-        req.add_header("Content-Type", "application/x-www-form-urlencoded")
-        with urllib.request.urlopen(req, timeout=15) as r:
-            payload = json.loads(r.read().decode("utf-8"))
-        return payload.get("access_token")
+        cred_type = adc.get("type")
+        if cred_type == "authorized_user":
+            body = urllib.parse.urlencode({
+                "client_id": adc["client_id"],
+                "client_secret": adc["client_secret"],
+                "refresh_token": adc["refresh_token"],
+                "grant_type": "refresh_token",
+            }).encode("utf-8")
+            req = urllib.request.Request("https://oauth2.googleapis.com/token", data=body, method="POST")
+            req.add_header("Content-Type", "application/x-www-form-urlencoded")
+            with urllib.request.urlopen(req, timeout=15) as r:
+                payload = json.loads(r.read().decode("utf-8"))
+            return payload.get("access_token")
+        elif cred_type == "service_account":
+            from google.oauth2 import service_account
+            import google.auth.transport.requests
+            creds = service_account.Credentials.from_service_account_info(
+                adc,
+                scopes=["https://www.googleapis.com/auth/cloud-platform"],
+            )
+            creds.refresh(google.auth.transport.requests.Request())
+            logger.info(f"[auth] got token via service account ({adc.get('client_email', '?')})")
+            return creds.token
+        return None
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace")
         logger.info(f"[auth] ADC refresh grant failed ({e.code}): {detail[:120]} - falling back to gcloud")

@@ -35,7 +35,7 @@ _DEPENDENCY_ERROR = {
 
 
 def _build_adc_credentials():
-    """Read ADC JSON and build Credentials with refresh_token, bypassing RAPT reauth."""
+    """Read ADC JSON and build Credentials (authorized_user or service_account)."""
     adc_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
     if not adc_path:
         appdata = os.environ.get("APPDATA")
@@ -46,16 +46,23 @@ def _build_adc_credentials():
     try:
         with open(adc_path, encoding="utf-8") as f:
             adc = json.load(f)
-        if adc.get("type") != "authorized_user":
-            return None
-        from google.oauth2.credentials import Credentials
-        return Credentials(
-            token=None,
-            refresh_token=adc["refresh_token"],
-            client_id=adc["client_id"],
-            client_secret=adc["client_secret"],
-            token_uri="https://oauth2.googleapis.com/token",
-        )
+        cred_type = adc.get("type")
+        if cred_type == "authorized_user":
+            from google.oauth2.credentials import Credentials
+            return Credentials(
+                token=None,
+                refresh_token=adc["refresh_token"],
+                client_id=adc["client_id"],
+                client_secret=adc["client_secret"],
+                token_uri="https://oauth2.googleapis.com/token",
+            )
+        elif cred_type == "service_account":
+            from google.oauth2 import service_account
+            return service_account.Credentials.from_service_account_info(
+                adc,
+                scopes=["https://www.googleapis.com/auth/cloud-platform"],
+            )
+        return None
     except Exception as e:
         logger.info(f"[genai] ADC credential build skipped ({type(e).__name__}: {e})")
         return None

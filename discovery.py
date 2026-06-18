@@ -25,8 +25,8 @@ def get_recommended_models():
     return {
         "text": [
             "gemini-3.5-flash",
-            "gemini-3.1-pro",
-            "gemini-3-flash",
+            "gemini-3.1-pro-preview",
+            "gemini-3-flash-preview",
             "gemini-3.1-flash-lite",
             "gemini-2.5-pro",
             "gemini-2.5-flash",
@@ -34,7 +34,7 @@ def get_recommended_models():
         ],
         "vision": [
             "gemini-3.5-flash",
-            "gemini-3.1-pro",
+            "gemini-3.1-pro-preview",
             "gemini-2.5-pro",
             "gemini-2.5-flash",
         ],
@@ -45,10 +45,9 @@ def get_recommended_models():
             "imagen-3.0-capability-001",
         ],
         "image_transformation": [
-            # 'image + text -> image' via Gemini multimodal :generateContent
-            "gemini-2.5-flash-image",
             "gemini-3.1-flash-image",
             "gemini-3-pro-image",
+            "gemini-2.5-flash-image",
         ],
         "video_generation": [
             "veo-3.1-generate-001",
@@ -61,14 +60,17 @@ def get_recommended_models():
         "embedding": [
             "text-embedding-004",
             "gemini-embedding-2",
+            "gemini-embedding-001",
         ],
         "speech": [
+            "gemini-3.1-flash-tts-preview",
             "gemini-2.5-flash-preview-tts",
             "gemini-2.5-pro-preview-tts",
         ],
         "live_text": [
             "gemini-3.5-flash",
-            "gemini-3.1-pro",
+            "gemini-3.1-flash-live-preview",
+            "gemini-3.1-flash-lite",
             "gemini-2.5-flash-live-api",
             "gemini-2.5-flash",
         ],

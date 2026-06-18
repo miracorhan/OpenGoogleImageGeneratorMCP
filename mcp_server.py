@@ -235,9 +235,8 @@ class TransformImageParams(BaseModel):
     model_name: str = Field(
         "gemini-2.5-flash-image",
         description=(
-            "Vertex AI Gemini image model. Verified available: gemini-2.5-flash-image. "
-            "Newer variants (gemini-3.1-flash-image, gemini-3-pro-image) may exist in other "
-            "projects/regions — check tool_list_available_models for the live list."
+            "Gemini image model. Vertex AI available: gemini-2.5-flash-image (default), gemini-2.5-pro-image. "
+            "Newer (Gemini API only): gemini-3.1-flash-image, gemini-3-pro-image."
         ),
     )
     return_base64: bool = Field(False, description="Whether to return the base64-encoded image.")
@@ -643,7 +642,7 @@ async def tool_embed(params: EmbedParams) -> dict:
 class AnalyzeVideoParams(BaseModel):
     video_path: str = Field(..., description="Absolute path to the local video file (max 20MB). Supported: mp4, mov, avi, webm, mkv.")
     prompt: str = Field(..., description="The question or analysis instruction about the video.")
-    model_tier: Literal["fast", "quality"] = Field("fast", description="fast → gemini-3.5-flash, quality → gemini-3.1-pro.")
+    model_tier: Literal["fast", "balanced", "quality"] = Field("fast", description="fast → gemini-3.1-flash-lite, balanced → gemini-3.5-flash, quality → gemini-2.5-pro.")
     model: Optional[str] = Field(None, description="Override the model name directly.")
 
 @mcp.tool()
@@ -684,7 +683,7 @@ async def tool_generate_speech(params: GenerateSpeechParams) -> dict:
 
 class LiveGenerateParams(BaseModel):
     prompt: str = Field(..., description="The text prompt to send to Gemini streaming.")
-    model_tier: Literal["fast", "quality"] = Field("fast", description="fast → gemini-3.5-flash, quality → gemini-3.1-pro.")
+    model_tier: Literal["fast", "balanced", "quality"] = Field("fast", description="fast → gemini-3.1-flash-lite, balanced → gemini-3.5-flash, quality → gemini-2.5-pro.")
     model: Optional[str] = Field(None, description="Override the model name directly.")
 
 @mcp.tool()

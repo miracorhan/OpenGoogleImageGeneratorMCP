@@ -10,7 +10,7 @@ __version__ = "3.1.1"
 GITHUB_REPO = "miracorhan/OpenGoogleImageGeneratorMCP"
 
 # Load environment variables from .env file
-load_dotenv()
+load_dotenv(override=True)
 
 # Configure logging
 _log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")

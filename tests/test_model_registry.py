@@ -76,17 +76,24 @@ def test_speech_models_has_fast_and_quality():
     from model_registry import SPEECH_MODELS
     assert "fast" in SPEECH_MODELS
     assert "quality" in SPEECH_MODELS
-    assert "tts" in SPEECH_MODELS["fast"]
+    assert SPEECH_MODELS["fast"] == "gemini-3.1-flash-tts-preview"
     assert "tts" in SPEECH_MODELS["quality"]
 
 
-def test_video_analyze_models_has_fast_and_quality():
+def test_embed_model_gemini_api_v1_is_defined():
+    from model_registry import EMBED_MODEL_GEMINI_API_V1
+    assert EMBED_MODEL_GEMINI_API_V1 == "gemini-embedding-001"
+
+
+def test_video_analyze_models_has_all_tiers():
     from model_registry import VIDEO_ANALYZE_MODELS
-    assert "fast" in VIDEO_ANALYZE_MODELS
-    assert "quality" in VIDEO_ANALYZE_MODELS
+    assert VIDEO_ANALYZE_MODELS["fast"] == "gemini-3.1-flash-lite"
+    assert VIDEO_ANALYZE_MODELS["balanced"] == "gemini-3.5-flash"
+    assert VIDEO_ANALYZE_MODELS["quality"] == "gemini-2.5-pro"
 
 
-def test_live_models_has_fast_and_quality():
+def test_live_models_has_all_tiers():
     from model_registry import LIVE_MODELS
-    assert "fast" in LIVE_MODELS
-    assert "quality" in LIVE_MODELS
+    assert LIVE_MODELS["fast"] == "gemini-3.1-flash-lite"
+    assert LIVE_MODELS["balanced"] == "gemini-3.5-flash"
+    assert LIVE_MODELS["quality"] == "gemini-3.1-flash-live-preview"

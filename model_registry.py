@@ -50,20 +50,23 @@ def resolve_model(tier: str, tool_type: str) -> Tuple[str, str]:
 
 EMBED_MODEL_VERTEX = "text-embedding-004"
 EMBED_MODEL_GEMINI_API = "gemini-embedding-2"
+EMBED_MODEL_GEMINI_API_V1 = "gemini-embedding-001"
 
 SPEECH_MODELS = {
-    "fast": "gemini-2.5-flash-preview-tts",
+    "fast":    "gemini-3.1-flash-tts-preview",
     "quality": "gemini-2.5-pro-preview-tts",
 }
 
 VIDEO_ANALYZE_MODELS = {
-    "fast": "gemini-3.5-flash",
-    "quality": "gemini-2.5-pro",
+    "fast":     "gemini-3.1-flash-lite",
+    "balanced": "gemini-3.5-flash",
+    "quality":  "gemini-2.5-pro",
 }
 
 LIVE_MODELS = {
-    "fast": "gemini-3.5-flash",
-    "quality": "gemini-2.5-pro",
+    "fast":     "gemini-3.1-flash-lite",
+    "balanced": "gemini-3.5-flash",
+    "quality":  "gemini-3.1-flash-live-preview",
 }
 
 MUSIC_MODELS = {

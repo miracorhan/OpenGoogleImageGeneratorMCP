@@ -10,13 +10,21 @@ def test_get_recommended_models_has_all_categories():
 
 def test_get_recommended_models_includes_known_ids():
     models = get_recommended_models()
+    assert "gemini-3.5-flash" in models["text"]
+    assert "gemini-3.1-flash-lite" in models["text"]
+    assert "gemini-3.1-pro-preview" in models["text"]
     assert "gemini-2.5-flash" in models["text"]
     assert "gemini-2.5-pro" in models["text"]
     assert "imagen-4.0-fast-generate-001" in models["image_generation"]
     assert "imagen-3.0-generate-002" in models["image_generation"]
     assert "imagen-3.0-capability-001" in models["image_generation"]
+    assert "gemini-3.1-flash-image" in models["image_transformation"]
+    assert "gemini-3-pro-image" in models["image_transformation"]
     assert "gemini-2.5-flash-image" in models["image_transformation"]
     assert "veo-3.1-fast-generate-001" in models["video_generation"]
+    assert "gemini-3.1-flash-tts-preview" in models["speech"]
+    assert "gemini-embedding-001" in models["embedding"]
+    assert "gemini-3.1-flash-live-preview" in models["live_text"]
 
 
 def test_list_vertex_publisher_models_returns_empty():

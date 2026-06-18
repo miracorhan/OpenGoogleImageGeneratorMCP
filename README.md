@@ -2,7 +2,7 @@
 
 This project is a Model Context Protocol (MCP) server that exposes Google Cloud Vertex AI and Google GenAI SDK capabilities—Imagen, Gemini, Veo, Lyria, and Chirp models—to MCP-compatible clients. Built with the `FastMCP` framework.
 
-> **Current version: 3.0.0** — Full GenAI SDK integration (embed, speech, video analysis, live generation), WebP/AVIF format support, multi-tier model selection, parallel batch generation, sequential pipeline engine, and comprehensive video tools.
+> **Current version: 3.1.1** — Full GenAI SDK integration (embed, speech, video analysis, live generation), WebP/AVIF format support, multi-tier model selection, parallel batch generation, sequential pipeline engine, and comprehensive video tools. Service Account JSON auth support, Gemini 3.x text/speech/live models.
 
 ## Features & Tools
 
@@ -33,15 +33,15 @@ This project is a Model Context Protocol (MCP) server that exposes Google Cloud 
 
 | Tool | Description | Backend |
 |---|---|---|
-| `tool_generate_speech` | Text-to-speech with voice selection (Aoede, Charon, Fenrir, Kore, Puck). Supports `model_tier` (fast/quality). Outputs WAV | Gemini TTS (`gemini-2.5-flash-preview-tts` / `gemini-2.5-pro-preview-tts`) |
+| `tool_generate_speech` | Text-to-speech with voice selection (Aoede, Charon, Fenrir, Kore, Puck). Supports `model_tier` (fast/quality). Outputs WAV | Gemini TTS (`gemini-3.1-flash-tts-preview` / `gemini-2.5-pro-preview-tts`) |
 | `tool_generate_music` | Music generation from a text prompt | Lyria 2 / Lyria 3 (GenAI SDK) |
 
 ### GenAI SDK Tools
 
 | Tool | Description | Backend |
 |---|---|---|
-| `tool_embed` | Text embeddings as float vectors | Gemini Embedding (`text-embedding-004` on Vertex AI, `gemini-embedding-2` on Gemini API) |
-| `tool_live_generate` | Streaming text generation — response is accumulated and returned in full | Gemini Live (`gemini-3.5-flash` / `gemini-2.5-pro`) |
+| `tool_embed` | Text embeddings as float vectors | Gemini Embedding (`text-embedding-004` on Vertex AI, `gemini-embedding-2` / `gemini-embedding-001` on Gemini API) |
+| `tool_live_generate` | Streaming text generation — response is accumulated and returned in full | Gemini Live (`gemini-3.1-flash-lite` / `gemini-3.5-flash` / `gemini-3.1-flash-live-preview`) |
 
 ### Utility Tools
 
@@ -96,13 +96,31 @@ Most tools accept a `model_tier` parameter:
 
 | Tier | `tool_live_generate` / `tool_analyze_video` | `tool_generate_speech` | `tool_embed` |
 |---|---|---|---|
-| `fast` | `gemini-3.5-flash` ¹ | `gemini-2.5-flash-preview-tts` | `gemini-embedding-2` / `text-embedding-004` ² |
+| `fast` | `gemini-3.1-flash-lite` ¹ | `gemini-3.1-flash-tts-preview` ¹ | `gemini-embedding-2` / `text-embedding-004` ² |
+| `balanced` | `gemini-3.5-flash` ¹ | — | — |
 | `quality` | `gemini-2.5-pro` | `gemini-2.5-pro-preview-tts` | — |
 
-> ¹ **Generally Available** as of May 2026 per [Google Models docs](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/google-models.md.txt).
-> ² `gemini-embedding-2` is used when `GOOGLE_CLOUD_API_KEY` is set; `text-embedding-004` is used with Vertex AI ADC.
+> ¹ Requires `GOOGLE_CLOUD_API_KEY` (Gemini API endpoint). Verified working as of June 2026 per [Gemini API Models docs](https://ai.google.dev/gemini-api/docs/models.md.txt).
+> ² `gemini-embedding-2` / `gemini-embedding-001` are used when `GOOGLE_CLOUD_API_KEY` is set; `text-embedding-004` is used with Vertex AI ADC.
+
+---
+
+### Model availability: Vertex AI vs. Gemini API
+
+Google exposes models through two separate endpoints with **different model catalogs**:
+
+| Endpoint | Auth | Image models available | Text/speech models available |
+|---|---|---|---|
+| **Vertex AI** (`aiplatform.googleapis.com`) | ADC / Service Account | `gemini-2.5-flash-image`, `gemini-2.5-pro-image` | `gemini-2.5-pro/flash/flash-lite` |
+| **Gemini API** (`generativelanguage.googleapis.com`) | `GOOGLE_CLOUD_API_KEY` | `gemini-3.1-flash-image`, `gemini-3-pro-image` ³ | `gemini-3.5-flash`, `gemini-3.1-flash-lite`, `gemini-3.1-pro-preview` |
+
+> ³ **Why `gemini-3.1-flash-image` and `gemini-3-pro-image` are not currently usable:**
+> `tool_transform_image` and the `balanced` generate tier call Vertex AI's `:generateContent` endpoint with an OAuth token. As of June 2026, Google has **not yet published** these models to the Vertex AI publisher catalog — requesting them returns HTTP 404 regardless of project or region. They are listed in the [Gemini API catalog](https://ai.google.dev/gemini-api/docs/models.md.txt) and are reachable only via API key (`generativelanguage.googleapis.com`). The image transformation backend currently uses Vertex AI, so it **cannot** use them until Google makes them available there. This server will be updated automatically once they appear.
 >
-> **Preview models** available but not set as defaults: `gemini-3.1-pro`, `gemini-3.1-flash-image`, `gemini-3-flash`, `gemini-3-pro-image`. Pass them via the `model` / `model_name` override parameter. See [full model list](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/google-models.md.txt) for the latest.
+> **Sources:**
+> - Gemini API model catalog: <https://ai.google.dev/gemini-api/docs/models.md.txt>
+> - Vertex AI model catalog: <https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/google-models.md.txt>
+> - Vertex AI available models (live probe): run `tool_list_available_models` in your project
 
 ### Output formats
 
@@ -168,6 +186,7 @@ For GenAI SDK tools (`tool_embed`, `tool_analyze_video`, `tool_generate_speech`,
 - A **Cloud API Key** (`GOOGLE_CLOUD_API_KEY`) — created in GCP Console, uses your existing GCP billing. Enables newer models like `gemini-3.5-flash`. *(Recommended)*
 - A **Gemini API key** (`GOOGLE_GENAI_API_KEY`) — from [AI Studio](https://aistudio.google.com/apikey), separate billing.
 - **Vertex AI ADC** — set `GOOGLE_GENAI_BACKEND=vertexai`, uses `gcloud auth application-default login`.
+- **Service Account JSON** (`GOOGLE_APPLICATION_CREDENTIALS`) — see below.
 
 > **Cloud API Key setup:** Run `gcloud services enable generativelanguage.googleapis.com apikeys.googleapis.com` then `gcloud services api-keys create --display-name="GeminiKey"`. The key string appears in the command output — copy it directly to `.env`.
 
@@ -189,15 +208,32 @@ cd OpenGoogleImageGeneratorMCP
 pip install -r requirements.txt
 ```
 
-### Authentication (Critical Step)
+### Authentication
 
-The server uses Google Cloud Application Default Credentials (ADC):
+Choose one of the following methods:
+
+**Option A — User account (interactive login):**
 
 ```bash
 gcloud auth application-default login
 ```
 
-*This opens a browser for login. Use an account with access to your Google Cloud project.*
+*Opens a browser. Use an account that has access to your Google Cloud project.*
+
+**Option B — Service Account JSON key:**
+
+```bash
+# Download key: GCP Console → IAM & Admin → Service Accounts → Keys → Add Key → JSON
+# Required role: Vertex AI User (roles/aiplatform.user)
+```
+
+Set in `.env`:
+
+```env
+GOOGLE_APPLICATION_CREDENTIALS=C:\path\to\service-account-key.json
+```
+
+Both `vertex_ai_tools` (Imagen, Veo, Lyria) and `genai_tools` (embed, speech, video analysis, live) pick up the SA JSON automatically. No `gcloud` CLI required when using a service account key.
 
 ### Environment Configuration
 
@@ -223,6 +259,11 @@ GOOGLE_CLOUD_API_KEY=AIza...
 
 # Option C: Vertex AI ADC (no key needed, uses gcloud auth application-default login)
 # GOOGLE_GENAI_BACKEND=vertexai
+
+# Option D: Service Account JSON key (no gcloud CLI required)
+# Download: GCP Console → IAM & Admin → Service Accounts → Keys → Add Key → JSON
+# Required role: Vertex AI User (roles/aiplatform.user)
+# GOOGLE_APPLICATION_CREDENTIALS=C:\path\to\service-account-key.json
 
 # --- Advanced Vertex AI Authentication (Optional) ---
 # Direct OAuth 2.0 Access Token
@@ -285,12 +326,15 @@ python mcp_server.py
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `RefreshError` / "Reauthentication needed" | ADC token expired | `gcloud auth application-default login` |
+| `RefreshError` / "Reauthentication needed" | ADC token expired | `gcloud auth application-default login` or switch to SA JSON |
 | `available: {}` from `tool_list_available_models` | Same ADC expiry, probe skipped | Re-authenticate (above) |
+| `403 PERMISSION_DENIED` with SA JSON | Service account missing role | Grant `roles/aiplatform.user` to the service account |
+| `FileNotFoundError` for SA JSON | Wrong path in `GOOGLE_APPLICATION_CREDENTIALS` | Use an absolute path; forward slashes or escaped backslashes |
 | `401 UNAUTHENTICATED` with `GOOGLE_CLOUD_API_KEY` | Key used with Vertex AI endpoint (rejects keys) | Ensure `GOOGLE_GENAI_BACKEND` is **not** set to `vertexai` when using a Cloud API key |
 | `403 PERMISSION_DENIED` — "Gemini API has not been used" | `generativelanguage.googleapis.com` not enabled | `gcloud services enable generativelanguage.googleapis.com` |
 | `403 PERMISSION_DENIED` — "API Keys API disabled" | `apikeys.googleapis.com` blocked by org policy | `gcloud services enable apikeys.googleapis.com` |
 | `404 NOT_FOUND` for `text-embedding-004` | Vertex AI embedding model not available on Gemini API endpoint | Set `GOOGLE_CLOUD_API_KEY` (auto-selects `gemini-embedding-2`) or use ADC |
+| `404 NOT_FOUND` for `gemini-3.1-flash-image` or `gemini-3-pro-image` | These models are **Gemini API only** — not yet on Vertex AI | Use `gemini-2.5-flash-image` / `gemini-2.5-pro-image` for transform, or wait for Vertex AI availability |
 | `404 NOT_FOUND` for a model | Model not available in your project/region | Run `tool_list_available_models` and pick from `available` list |
 | `gcloud api-keys` command not found | Wrong command prefix | Use `gcloud services api-keys list/create/delete` |
 
