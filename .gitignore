@@ -70,3 +70,4 @@ outputs/
 .claude/
 .gemini/
 CLAUDE.md
+.mcp.json
