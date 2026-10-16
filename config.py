@@ -6,7 +6,7 @@ import sys
 import logging
 from dotenv import load_dotenv
 
-__version__ = "3.2.0"
+__version__ = "3.3.0"
 GITHUB_REPO = "miracorhan/OpenGoogleImageGeneratorMCP"
 
 # Load environment variables from .env file
@@ -29,6 +29,9 @@ logger = logging.getLogger("VertexAI-MCP")
 # Core Settings
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT")
 LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
+# Gemini publisher models (3.x image/text/TTS) are served from the `global`
+# endpoint only; Imagen and Veo stay on the regional LOCATION above.
+GEMINI_LOCATION = os.environ.get("GOOGLE_CLOUD_GEMINI_LOCATION", "global")
 DEFAULT_OUTPUT_DIR = os.environ.get("DEFAULT_OUTPUT_DIR", "./outputs")
 
 # Authentication Settings

@@ -51,18 +51,21 @@ async def test_pipeline_rejects_unknown_tool(tmp_path):
     assert "unknown" in result["error"].lower()
 
 
-def test_resolve_step_params_edit_tier_returns_imagen_model():
-    """edit steps with model_tier must resolve to an Imagen model, not Gemini."""
+def test_resolve_step_params_edit_tier_returns_gemini_image_model():
+    """edit steps with model_tier resolve via the 'edit' tool type."""
     from pipeline import _resolve_step_params
     result = _resolve_step_params("edit", {"prompt": "add hat", "model_tier": "fast"})
     assert "model_tier" not in result
-    assert "model_name" in result
-    assert result["model_name"].startswith("imagen"), (
-        f"Expected Imagen model for edit tier, got {result['model_name']!r}"
-    )
+    assert result["model_name"] == "gemini-3.1-flash-lite-image"
 
 
-def test_resolve_step_params_edit_quality_tier_returns_imagen_model():
+def test_resolve_step_params_edit_quality_tier():
     from pipeline import _resolve_step_params
     result = _resolve_step_params("edit", {"prompt": "x", "model_tier": "quality"})
-    assert result["model_name"].startswith("imagen")
+    assert result["model_name"] == "gemini-nano-banana-2.1"
+
+
+def test_resolve_step_params_upscale_tier_never_uses_lite_model():
+    from pipeline import _resolve_step_params
+    result = _resolve_step_params("upscale", {"model_tier": "fast"})
+    assert result["model_name"] == "gemini-3.1-flash-image"

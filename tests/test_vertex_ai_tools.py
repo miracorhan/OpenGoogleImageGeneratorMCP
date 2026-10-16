@@ -406,6 +406,7 @@ async def test_generate_image_passes_seed_to_payload():
     with patch("vertex_ai_tools._imagen_predict", side_effect=fake_predict):
         result = await vertex_ai_tools.generate_image(
             prompt="test",
+            model_name="imagen-4.0-fast-generate-001",
             seed=42,
             add_watermark=False,
         )
@@ -420,7 +421,8 @@ async def test_generate_image_passes_negative_prompt():
         return {"predictions": [{"bytesBase64Encoded": "iVBORw0KGgo="}]}
 
     with patch("vertex_ai_tools._imagen_predict", side_effect=fake_predict):
-        await vertex_ai_tools.generate_image(prompt="test", negative_prompt="blurry")
+        await vertex_ai_tools.generate_image(prompt="test", model_name="imagen-4.0-fast-generate-001",
+                                             negative_prompt="blurry")
     assert captured["payload"]["parameters"]["negativePrompt"] == "blurry"
 
 @pytest.mark.asyncio
@@ -431,7 +433,7 @@ async def test_generate_image_enhance_prompt_default_true():
         return {"predictions": [{"bytesBase64Encoded": "iVBORw0KGgo="}]}
 
     with patch("vertex_ai_tools._imagen_predict", side_effect=fake_predict):
-        await vertex_ai_tools.generate_image(prompt="test")
+        await vertex_ai_tools.generate_image(prompt="test", model_name="imagen-4.0-fast-generate-001")
     assert captured["payload"]["parameters"]["enhancePrompt"] is True
 
 
@@ -623,8 +625,10 @@ async def test_batch_generate_returns_per_prompt_results(tmp_path):
             prompts=["cat", "dog"],
             output_prefix="item",
             output_dir=str(tmp_path),
+            model_name="imagen-4.0-fast-generate-001",
         )
     assert result["success"] is True
+    assert all(r["success"] for r in result["results"])
     assert len(result["results"]) == 2
     assert result["results"][0]["prompt"] == "cat"
     assert result["results"][1]["prompt"] == "dog"
@@ -644,6 +648,7 @@ async def test_batch_generate_partial_failure(tmp_path):
             prompts=["ok", "fail", "ok2"],
             output_prefix="b",
             output_dir=str(tmp_path),
+            model_name="imagen-4.0-fast-generate-001",
         )
     assert result["success"] is True  # overall success even if some fail
     assert result["results"][0]["success"] is True
@@ -679,3 +684,227 @@ async def test_gemini_generate_image_webp_output(mock_generate, tmp_path):
     )
     assert result["success"] is True
     assert result["results"][0]["path"].endswith(".webp")
+
+
+# ---- Gemini routing / global endpoint / thinking config (v3.3.0) ----------
+
+@pytest.mark.asyncio
+async def test_generate_image_routes_gemini_models_to_generate_content(tmp_path):
+    captured = {}
+    def fake_generate(model_name, contents, generation_config=None):
+        captured["model"] = model_name
+        captured["config"] = generation_config
+        return {"candidates": [{"content": {"parts": [{"inlineData": {"data": "iVBORw0KGgo="}}]}}]}
+
+    with patch("vertex_ai_tools._gemini_generate_content", side_effect=fake_generate), \
+         patch("vertex_ai_tools._imagen_predict") as mock_predict:
+        result = await vertex_ai_tools.generate_image(
+            prompt="a cat", output_path=str(tmp_path / "c.png"),
+            model_name="gemini-nano-banana-2.1", aspect_ratio="16:9", number_of_images=2,
+        )
+    assert result["success"] is True
+    assert [r["path"] for r in result["results"]] == [str(tmp_path / "c_0.png"), str(tmp_path / "c_1.png")]
+    assert captured["model"] == "gemini-nano-banana-2.1"
+    assert captured["config"]["imageConfig"] == {"aspectRatio": "16:9"}
+    mock_predict.assert_not_called()
+
+
+def test_gemini_generate_content_uses_global_endpoint():
+    with patch("vertex_ai_tools._vertex_post", return_value={}) as mock_post, \
+         patch("vertex_ai_tools.GEMINI_LOCATION", "global"):
+        vertex_ai_tools._gemini_generate_content("gemini-3-pro-image", [])
+    url = mock_post.call_args.args[0]
+    assert url.startswith("https://aiplatform.googleapis.com/v1/")
+    assert "/locations/global/publishers/google/models/gemini-3-pro-image:generateContent" in url
+
+
+def test_imagen_predict_uses_regional_endpoint():
+    with patch("vertex_ai_tools._vertex_post", return_value={}) as mock_post, \
+         patch("vertex_ai_tools.LOCATION", "us-west1"):
+        vertex_ai_tools._imagen_predict("imagen-3.0-capability-001", {})
+    url = mock_post.call_args.args[0]
+    assert url.startswith("https://us-west1-aiplatform.googleapis.com/v1/")
+    assert "/locations/us-west1/" in url
+
+
+def test_thinking_config_per_model_family():
+    tc = vertex_ai_tools._thinking_config
+    assert tc("gemini-2.5-flash", "HIGH") == {"thinkingBudget": 8192}
+    assert tc("gemini-3.8-flash", "HIGH") == {"thinkingLevel": "HIGH"}
+    assert tc("gemini-3.8-flash", "MINIMAL") == {"thinkingLevel": "LOW"}
+    assert tc("gemini-4-argon", "minimal") == {"thinkingLevel": "LOW"}
+    assert tc("gemini-3.5-flash-lite", "MINIMAL") == {"thinkingLevel": "MINIMAL"}
+    assert tc("gemini-3.8-flash", "bogus") == {"thinkingLevel": "HIGH"}
+
+
+# ---- Gemini edit / upscale / remove_background (v3.3.0) ------------------
+
+def _png_bytes(size=(40, 20), color=(255, 0, 0)):
+    from PIL import Image
+    buf = BytesIO()
+    Image.new("RGB", size, color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _gemini_image_response(png: bytes):
+    return {"candidates": [{"content": {"parts": [
+        {"inlineData": {"mimeType": "image/png", "data": base64.b64encode(png).decode()}}
+    ]}}]}
+
+
+def test_nearest_aspect_ratio(tmp_path):
+    p = tmp_path / "wide.png"
+    p.write_bytes(_png_bytes((1920, 1080)))
+    assert vertex_ai_tools._nearest_aspect_ratio(str(p)) == "16:9"
+    p.write_bytes(_png_bytes((1000, 1000)))
+    assert vertex_ai_tools._nearest_aspect_ratio(str(p)) == "1:1"
+    assert vertex_ai_tools._nearest_aspect_ratio(str(tmp_path / "missing.png")) is None
+
+
+def test_chroma_key_to_alpha_makes_green_transparent():
+    from PIL import Image
+    img = Image.new("RGB", (10, 10), (0, 255, 0))
+    img.paste((200, 30, 30), (3, 3, 7, 7))
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    out = Image.open(BytesIO(vertex_ai_tools._chroma_key_to_alpha(buf.getvalue(), "green")))
+    assert out.mode == "RGBA"
+    assert out.getpixel((0, 0))[3] == 0          # background → transparent
+    assert out.getpixel((5, 5)) == (200, 30, 30, 255)  # subject untouched
+
+
+def test_chroma_key_magenta_keeps_green_subject():
+    from PIL import Image
+    img = Image.new("RGB", (10, 10), (255, 0, 255))
+    img.paste((20, 200, 20), (3, 3, 7, 7))
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    out = Image.open(BytesIO(vertex_ai_tools._chroma_key_to_alpha(buf.getvalue(), "magenta")))
+    assert out.getpixel((0, 0))[3] == 0
+    assert out.getpixel((5, 5)) == (20, 200, 20, 255)
+
+
+@pytest.mark.asyncio
+async def test_edit_image_gemini_sends_mask_and_instruction(tmp_path):
+    base = tmp_path / "base.png"
+    base.write_bytes(_png_bytes((1600, 900)))
+    mask = tmp_path / "mask.png"
+    mask.write_bytes(_png_bytes((1600, 900), (255, 255, 255)))
+    captured = {}
+
+    def fake_generate(model_name, contents, generation_config=None):
+        captured["model"] = model_name
+        captured["parts"] = contents[0]["parts"]
+        captured["config"] = generation_config
+        return _gemini_image_response(_png_bytes())
+
+    with patch("vertex_ai_tools._gemini_generate_content", side_effect=fake_generate), \
+         patch("vertex_ai_tools._imagen_predict") as mock_predict:
+        result = await vertex_ai_tools.edit_image(
+            prompt="a red hat", base_image_path=str(base), mask_image_path=str(mask),
+            edit_mode="EDIT_MODE_INPAINT_INSERTION", output_path=str(tmp_path / "o.png"),
+            negative_prompt="blur",
+        )
+    assert result["success"] is True
+    assert result["results"][0]["path"] == str(tmp_path / "o.png")
+    assert captured["model"] == "gemini-3.1-flash-image"
+    assert len([p for p in captured["parts"] if "inlineData" in p]) == 2  # base + mask
+    text = captured["parts"][-1]["text"]
+    assert "mask" in text and "a red hat" in text and "Do not include: blur" in text
+    assert captured["config"]["imageConfig"] == {"aspectRatio": "16:9"}
+    mock_predict.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_edit_image_gemini_sample_count(tmp_path):
+    base = tmp_path / "base.png"
+    base.write_bytes(_png_bytes())
+    with patch("vertex_ai_tools._gemini_generate_content", return_value=_gemini_image_response(_png_bytes())) as m:
+        result = await vertex_ai_tools.edit_image(prompt="x", base_image_path=str(base),
+                                                  output_path=str(tmp_path / "o.png"), sample_count=2)
+    assert m.call_count == 2
+    assert [r["path"] for r in result["results"]] == [str(tmp_path / "o_0.png"), str(tmp_path / "o_1.png")]
+
+
+@pytest.mark.asyncio
+async def test_upscale_image_gemini_requests_image_size(tmp_path):
+    base = tmp_path / "small.png"
+    base.write_bytes(_png_bytes((300, 400)))
+    captured = {}
+
+    def fake_generate(model_name, contents, generation_config=None):
+        captured["config"] = generation_config
+        return _gemini_image_response(_png_bytes())
+
+    with patch("vertex_ai_tools._gemini_generate_content", side_effect=fake_generate):
+        result = await vertex_ai_tools.upscale_image(base_image_path=str(base), output_path=str(tmp_path / "u.png"),
+                                                     target_resolution="4K")
+    assert result["success"] is True
+    assert captured["config"]["imageConfig"] == {"imageSize": "4K", "aspectRatio": "3:4"}
+
+
+@pytest.mark.asyncio
+async def test_upscale_image_rejects_1k_only_model(tmp_path):
+    base = tmp_path / "small.png"
+    base.write_bytes(_png_bytes())
+    with patch("vertex_ai_tools._gemini_generate_content") as m:
+        result = await vertex_ai_tools.upscale_image(base_image_path=str(base),
+                                                     model_name="gemini-3.1-flash-lite-image")
+    assert result["success"] is False
+    assert result["error"]["code"] == "VALIDATION"
+    m.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_remove_background_gemini_outputs_transparent_png(tmp_path):
+    from PIL import Image
+    base = tmp_path / "photo.jpg"
+    base.write_bytes(_png_bytes())
+    keyed = Image.new("RGB", (10, 10), (0, 255, 0))
+    keyed.paste((10, 10, 200), (2, 2, 8, 8))
+    buf = BytesIO()
+    keyed.save(buf, format="PNG")
+    captured = {}
+
+    def fake_generate(model_name, contents, generation_config=None):
+        captured["text"] = contents[0]["parts"][-1]["text"]
+        return _gemini_image_response(buf.getvalue())
+
+    with patch("vertex_ai_tools._gemini_generate_content", side_effect=fake_generate):
+        result = await vertex_ai_tools.remove_background(base_image_path=str(base),
+                                                         output_path=str(tmp_path / "cut.jpg"))
+    assert result["success"] is True
+    out_path = result["results"][0]["path"]
+    assert out_path == str(tmp_path / "cut.png")  # forced to PNG for alpha
+    out = Image.open(out_path)
+    assert out.mode == "RGBA"
+    assert out.getpixel((0, 0))[3] == 0
+    assert out.getpixel((5, 5))[3] == 255
+    assert "#00FF00" in captured["text"]
+
+
+@pytest.mark.asyncio
+async def test_remove_background_rejects_unknown_key_color(tmp_path):
+    base = tmp_path / "b.png"
+    base.write_bytes(_png_bytes())
+    result = await vertex_ai_tools.remove_background(base_image_path=str(base), key_color="orange")
+    assert result["success"] is False
+    assert result["error"]["code"] == "VALIDATION"
+
+
+@pytest.mark.asyncio
+async def test_remove_background_subject_goes_into_instruction(tmp_path):
+    base = tmp_path / "b.png"
+    base.write_bytes(_png_bytes())
+    captured = {}
+
+    def fake_generate(model_name, contents, generation_config=None):
+        captured["text"] = contents[0]["parts"][-1]["text"]
+        return _gemini_image_response(_png_bytes(color=(0, 255, 0)))
+
+    with patch("vertex_ai_tools._gemini_generate_content", side_effect=fake_generate):
+        result = await vertex_ai_tools.remove_background(base_image_path=str(base), subject="the red mug",
+                                                         key_color="magenta", return_base64=True)
+    assert result["success"] is True
+    assert "Isolate the red mug." in captured["text"]
+    assert "#FF00FF" in captured["text"]

@@ -1,8 +1,8 @@
 # Open Google Image Generator MCP
 
-This project is a Model Context Protocol (MCP) server that exposes Google Cloud Vertex AI and Google GenAI SDK capabilities—Imagen, Gemini, Veo, Lyria, and Chirp models—to MCP-compatible clients. Built with the `FastMCP` framework.
+This project is a Model Context Protocol (MCP) server that exposes Google Cloud Vertex AI and Google GenAI SDK capabilities—Gemini (Nano Banana) image models, Gemini 3.x / 4 text models, Veo, Lyria, and Gemini TTS—to MCP-compatible clients. Built with the MCP Python SDK (`FastMCP` on `mcp` 1.x, `MCPServer` on `mcp` 2.x — both supported).
 
-> **Current version: 3.1.1** — Full GenAI SDK integration (embed, speech, video analysis, live generation), WebP/AVIF format support, multi-tier model selection, parallel batch generation, sequential pipeline engine, and comprehensive video tools. Service Account JSON auth support, Gemini 3.x text/speech/live models.
+> **Current version: 3.3.0** — Image generation migrated from the shut-down Imagen 4 to the Gemini image family (`gemini-3.1-flash-lite-image`, `gemini-3.1-flash-image`, `gemini-nano-banana-2.1`, `gemini-3-pro-image`) served from the Vertex AI `global` endpoint; Gemini 3.8 Flash / 4 Argon text models; Gemini 3.8 TTS with all 30 prebuilt voices; Lyria 3.5; `mcp` 2.x compatibility.
 
 ## Features & Tools
 
@@ -10,44 +10,48 @@ This project is a Model Context Protocol (MCP) server that exposes Google Cloud 
 
 | Tool | Description | Backend |
 |---|---|---|
-| `tool_generate_image` | Text-to-image generation. Supports aspect ratio, negative prompt, seed, watermark, GCS output, and WebP/AVIF output | Imagen 4 (`imagen-4.0-fast-generate-001`) |
-| `tool_edit_image` | Mask-based inpaint/outpaint, background swap, product image, and prompt-driven edit. See *Edit modes* below | Imagen 3 Capability (`imagen-3.0-capability-001`) |
-| `tool_transform_image` | Free-form `image + text → image` transformation: style transfer, scene rewriting, multi-reference composition | Gemini multimodal (`gemini-2.5-flash-image`) |
-| `tool_analyze_image` | Multimodal image understanding and Q&A. Supports `thinking_level` (MINIMAL/LOW/MEDIUM/HIGH) and `media_resolution` (LOW/MEDIUM/HIGH/ULTRA_HIGH) | Gemini Vision (`gemini-2.5-flash`) |
-| `tool_upscale_image` | Upscale low-resolution images | Imagen |
-| `tool_remove_background` | Remove background via `EDIT_MODE_BGSWAP` | Imagen |
-| `tool_batch_generate` | Parallel batch text-to-image generation (up to 10 prompts, max 4 concurrent). `balanced` tier not supported for batch | Imagen |
+| `tool_generate_image` | Text-to-image generation. Supports aspect ratio, multiple images, and WebP/AVIF output. Negative prompt / seed / watermark / GCS output apply to legacy Imagen IDs only | Gemini image (`gemini-3.1-flash-lite-image`) |
+| `tool_edit_image` | Mask-guided inpaint/outpaint, background swap, product image, and prompt-driven edit (mask is sent to Gemini as a reference image). See *Edit modes* below | Gemini image (`gemini-3.1-flash-image`) ⁴ |
+| `tool_transform_image` | Free-form `image + text → image` transformation: style transfer, scene rewriting, multi-reference composition | Gemini image (`gemini-3.1-flash-image`) |
+| `tool_analyze_image` | Multimodal image understanding and Q&A. Supports `thinking_level` (MINIMAL/LOW/MEDIUM/HIGH) and `media_resolution` (LOW/MEDIUM/HIGH/ULTRA_HIGH) | Gemini (`gemini-3.8-flash`) |
+| `tool_upscale_image` | Upscale to `2K` or `4K` (`target_resolution`), keeping the aspect ratio | Gemini image (`gemini-3.1-flash-image`) ⁴ |
+| `tool_remove_background` | Remove the background and save a **transparent PNG**. Optional `subject` (what to keep) and `key_color` (`green`/`blue`/`magenta`) | Gemini image + local chroma key ⁴ |
+| `tool_batch_generate` | Parallel batch text-to-image generation (up to 10 prompts, max 4 concurrent). All tiers supported | Gemini image |
 | `tool_run_pipeline` | Sequential multi-step image processing pipeline (generate → edit → transform → …) | Mixed |
+
+> ⁴ These three tools used Imagen until v3.3.0. **As of 2026-10-16 every Imagen model (`imagen-3.0-capability-001`, `imagen-4.0-*`, `imagen-4.0-upscale-preview`) returns HTTP 404 on Vertex AI in us-central1, us-west1, us-east4, europe-west4 and global** (and Imagen 4 was shut down on the Gemini API on 2026-08-17), so they now run on Gemini image models. Gemini cannot emit an alpha channel, so `tool_remove_background` asks the model to paint everything except the subject in a flat chroma-key colour and keys it out locally with Pillow. Gemini edits are instruction-guided, not pixel-exact: content outside the mask is preserved closely but not bit-for-bit. Legacy `imagen-*` IDs are still accepted as `model_name`.
 
 ### Video Tools
 
 | Tool | Description | Backend |
 |---|---|---|
-| `tool_generate_video` | Text-to-video generation. Supports `audio_enabled` for Veo 3+ | Veo (`veo-3.1-fast-generate-001`) |
-| `tool_image_to_video` | Animate a still image into video. Supports optional `last_frame_path` for first+last frame mode | Veo |
-| `tool_extend_video` | Extend an existing video clip by 4, 6, or 8 seconds | Veo |
-| `tool_video_object_edit` | Insert or remove an object in a video via `operation` (`insert`/`remove`) and `prompt` | Veo |
+| `tool_generate_video` | Text-to-video generation. Supports `audio_enabled` for Veo 3+ | Veo (`veo-3.1-fast-generate-001`) ⁵ |
+| `tool_image_to_video` | Animate a still image into video. Supports optional `last_frame_path` for first+last frame mode | Veo ⁵ |
+| `tool_extend_video` | Extend an existing video clip by 4, 6, or 8 seconds | Veo ⁵ |
+| `tool_video_object_edit` | Insert or remove an object in a video via `operation` (`insert`/`remove`) and `prompt` | Veo ⁵ |
 | `tool_analyze_video` | Video understanding and Q&A (max 20MB; mp4, mov, avi, webm, mkv) | Gemini GenAI SDK |
+
+> ⁵ The four Veo tools are still placeholder stubs: they validate input and write a text placeholder to the output path instead of calling Veo. Note that Veo 3.1 is served from `us-central1` and `global` but returns 404 in other regions such as `us-west1`.
 
 ### Audio Tools
 
 | Tool | Description | Backend |
 |---|---|---|
-| `tool_generate_speech` | Text-to-speech with voice selection (Aoede, Charon, Fenrir, Kore, Puck). Supports `model_tier` (fast/quality). Outputs WAV | Gemini TTS (`gemini-3.1-flash-tts-preview` / `gemini-2.5-pro-preview-tts`) |
-| `tool_generate_music` | Music generation from a text prompt | Lyria 2 / Lyria 3 (GenAI SDK) |
+| `tool_generate_speech` | Text-to-speech with any of the 30 prebuilt Gemini voices (Kore, Puck, Zephyr, Charon, Aoede, …). Supports `model_tier` (fast/quality). Outputs WAV | Gemini TTS (`gemini-3.8-flash-lite-tts` / `gemini-3.8-flash-tts`) |
+| `tool_generate_music` | Music generation from a text prompt | Lyria 3.5 / Lyria 3 (GenAI SDK) |
 
 ### GenAI SDK Tools
 
 | Tool | Description | Backend |
 |---|---|---|
-| `tool_embed` | Text embeddings as float vectors | Gemini Embedding (`text-embedding-004` on Vertex AI, `gemini-embedding-2` / `gemini-embedding-001` on Gemini API) |
-| `tool_live_generate` | Streaming text generation — response is accumulated and returned in full | Gemini Live (`gemini-3.1-flash-lite` / `gemini-3.5-flash` / `gemini-3.1-flash-live-preview`) |
+| `tool_embed` | Text embeddings as float vectors | Gemini Embedding (`gemini-embedding-2` on Gemini API, `gemini-embedding-001` on Vertex AI) |
+| `tool_live_generate` | Streaming text generation — response is accumulated and returned in full | Gemini (`gemini-3.5-flash-lite` / `gemini-3.8-flash` / `gemini-4-argon`) |
 
 ### Utility Tools
 
 | Tool | Description |
 |---|---|
-| `tool_list_available_models` | Live-probes every candidate model in the configured project/location and returns only those that respond (200/400 = reachable, 404 = excluded). Cached for the server process lifetime; pass `force_refresh=true` to rescan. Also reports available update versions. |
+| `tool_list_available_models` | Live-probes every candidate model in the configured project (Gemini models on `GOOGLE_CLOUD_GEMINI_LOCATION`, Imagen on `GOOGLE_CLOUD_LOCATION`) and returns only those that respond (200/400 = reachable, 404 = excluded). Cached for the server process lifetime; pass `force_refresh=true` to rescan. Also reports available update versions. |
 | `tool_upload_file` | Register a local file for use as a reference image in subsequent tool calls (e.g. `tool_transform_image`). Returns a `file_uri`. |
 
 ---
@@ -63,13 +67,13 @@ This project is a Model Context Protocol (MCP) server that exposes Google Cloud 
 | `EDIT_MODE_BGSWAP` | Swap the background | No |
 | `EDIT_MODE_PRODUCT_IMAGE` | Product reference styling | No |
 
-Use `imagen-3.0-capability-001` (default) for all of the above. The legacy `imagen-3.0-generate-002` only supports `EDIT_MODE_DEFAULT` and does not accept a mask.
+All modes work with the Gemini image models (default `gemini-3.1-flash-image`; use `gemini-3-pro-image` for the most faithful edits). `tool_edit_image` also accepts `model_tier`.
 
 ### When to use which "image + text → image" tool
 
 | Need | Use |
 |---|---|
-| Mask-based inpaint/outpaint/BG-swap with pixel precision | **`tool_edit_image`** (Imagen Capability) |
+| Mask-guided inpaint/outpaint/BG-swap, or a specific edit mode | **`tool_edit_image`** |
 | "Make it look like X" / style transfer / scene rewriting / multi-reference compositions | **`tool_transform_image`** (Gemini multimodal) |
 
 ### Model tiers
@@ -79,29 +83,33 @@ Most tools accept a `model_tier` parameter:
 | Tier | Description |
 |---|---|
 | `fast` *(default)* | Lowest latency, lowest cost |
-| `balanced` | Quality / speed trade-off; routes to Gemini for image generation. **Not supported** for `tool_batch_generate` |
+| `balanced` | Quality / speed trade-off |
 | `quality` | Higher quality, moderate latency |
-| `ultra` | Maximum quality (Imagen 4 Ultra / Veo quality models) |
+| `ultra` | Maximum quality (Nano Banana Pro / Veo quality models) |
 
 #### Model resolution by tier and tool
 
-| Tier | `tool_generate_image` | `tool_transform_image` | `tool_generate_video` |
-|---|---|---|---|
-| `fast` | `imagen-4.0-fast-generate-001` | `gemini-2.5-flash-image` ¹ | `veo-3.1-fast-generate-001` |
-| `balanced` | `gemini-2.5-flash-image` ¹ | `gemini-2.5-flash-image` ¹ | `veo-3.1-fast-generate-001` |
-| `quality` | `imagen-4.0-generate-001` | `gemini-2.5-pro-image` | `veo-3.1-generate-001` |
-| `ultra` | `imagen-4.0-ultra-generate-001` | `gemini-2.5-pro-image` | `veo-3.1-generate-001` |
+| Tier | `tool_generate_image` / `tool_batch_generate` / `tool_transform_image` | `tool_generate_video` |
+|---|---|---|
+| `fast` | `gemini-3.1-flash-lite-image` | `veo-3.1-fast-generate-001` |
+| `balanced` | `gemini-3.1-flash-image` | `veo-3.1-fast-generate-001` |
+| `quality` | `gemini-nano-banana-2.1` | `veo-3.1-generate-001` |
+| `ultra` | `gemini-3-pro-image` | `veo-3.1-generate-001` |
+
+`tool_edit_image` and `tool_remove_background` use the same tier mapping. `tool_upscale_image` needs 2K/4K output, so its `fast`/`balanced` tiers use `gemini-3.1-flash-image` (the lite model is 1K-only); `quality` → `gemini-nano-banana-2.1`, `ultra` → `gemini-3-pro-image`. `tool_run_pipeline` applies the same per-tool mappings.
 
 **GenAI SDK tools** (`tool_live_generate`, `tool_analyze_video`, `tool_generate_speech`, `tool_embed`):
 
 | Tier | `tool_live_generate` / `tool_analyze_video` | `tool_generate_speech` | `tool_embed` |
 |---|---|---|---|
-| `fast` | `gemini-3.1-flash-lite` ¹ | `gemini-3.1-flash-tts-preview` ¹ | `gemini-embedding-2` / `text-embedding-004` ² |
-| `balanced` | `gemini-3.5-flash` ¹ | — | — |
-| `quality` | `gemini-2.5-pro` | `gemini-2.5-pro-preview-tts` | — |
+| `fast` | `gemini-3.5-flash-lite` | `gemini-3.8-flash-lite-tts` | `gemini-embedding-2` / `gemini-embedding-001` ² |
+| `balanced` | `gemini-3.8-flash` | — | — |
+| `quality` | `gemini-4-argon` ¹ | `gemini-3.8-flash-tts` | — |
 
-> ¹ Requires `GOOGLE_CLOUD_API_KEY` (Gemini API endpoint). Verified working as of June 2026 per [Gemini API Models docs](https://ai.google.dev/gemini-api/docs/models.md.txt).
-> ² `gemini-embedding-2` / `gemini-embedding-001` are used when `GOOGLE_CLOUD_API_KEY` is set; `text-embedding-004` is used with Vertex AI ADC.
+> ¹ `gemini-4-argon` has no Gemini API free tier (quota limit 0) — it needs a billed key or Vertex AI.
+> ² `gemini-embedding-2` is used with a Gemini API key; `gemini-embedding-001` with Vertex AI ADC.
+>
+> Model IDs verified on 2026-10-16 against both catalogs. `gemini-2.5-pro/flash/flash-lite` retire on Vertex AI on **2026-10-20** and are no longer used as defaults.
 
 ---
 
@@ -109,18 +117,20 @@ Most tools accept a `model_tier` parameter:
 
 Google exposes models through two separate endpoints with **different model catalogs**:
 
-| Endpoint | Auth | Image models available | Text/speech models available |
+| Endpoint | Auth | Image models | Text/speech models |
 |---|---|---|---|
-| **Vertex AI** (`aiplatform.googleapis.com`) | ADC / Service Account | `gemini-2.5-flash-image`, `gemini-2.5-pro-image` | `gemini-2.5-pro/flash/flash-lite` |
-| **Gemini API** (`generativelanguage.googleapis.com`) | `GOOGLE_CLOUD_API_KEY` | `gemini-3.1-flash-image`, `gemini-3-pro-image` ³ | `gemini-3.5-flash`, `gemini-3.1-flash-lite`, `gemini-3.1-pro-preview` |
+| **Vertex AI** (`aiplatform.googleapis.com`, `global` location) | ADC / Service Account | `gemini-3.1-flash-lite-image`, `gemini-3.1-flash-image`, `gemini-nano-banana-2.1`, `gemini-3-pro-image`, `gemini-2.5-flash-image` | `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-3.8-flash-tts`, `gemini-3.8-flash-lite-tts` |
+| **Gemini API** (`generativelanguage.googleapis.com`) | `GOOGLE_CLOUD_API_KEY` / `GOOGLE_GENAI_API_KEY` | same Gemini image family | same text/TTS models plus `lyria-3.5` (Gemini API only) |
 
-> ³ **Why `gemini-3.1-flash-image` and `gemini-3-pro-image` are not currently usable:**
-> `tool_transform_image` and the `balanced` generate tier call Vertex AI's `:generateContent` endpoint with an OAuth token. As of June 2026, Google has **not yet published** these models to the Vertex AI publisher catalog — requesting them returns HTTP 404 regardless of project or region. They are listed in the [Gemini API catalog](https://ai.google.dev/gemini-api/docs/models.md.txt) and are reachable only via API key (`generativelanguage.googleapis.com`). The image transformation backend currently uses Vertex AI, so it **cannot** use them until Google makes them available there. This server will be updated automatically once they appear.
+> ³ The Gemini 3.x image models (`gemini-3-pro-image`, `gemini-3.1-flash-lite-image`, `gemini-nano-banana-2.1`) are served by Vertex AI **only from the `global` location** — verified on 2026-10-16: they return HTTP 404 from `us-west1` and HTTP 400 (exists) from `global`. The same holds for `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.5-flash(-lite)`, `gemini-3.1-flash-lite` and the 3.8 TTS models. This server therefore sends every Gemini `:generateContent` call to `GOOGLE_CLOUD_GEMINI_LOCATION` (default `global`), and keeps Imagen/Veo on `GOOGLE_CLOUD_LOCATION`.
 >
 > **Sources:**
 > - Gemini API model catalog: <https://ai.google.dev/gemini-api/docs/models.md.txt>
+> - Gemini API deprecations: <https://ai.google.dev/gemini-api/docs/deprecations>
 > - Vertex AI model catalog: <https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/google-models.md.txt>
+> - Vertex AI model versions & retirements: <https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/model-versions>
 > - Vertex AI available models (live probe): run `tool_list_available_models` in your project
+
 
 ### Output formats
 
@@ -147,7 +157,7 @@ All tools return a uniform error shape:
     "model": "gemini-9.9-nonexistent",
     "endpoint": ":generateContent",
     "message": "Publisher Model `...` is not found.",
-    "hint": "Model '...' not found in project '...' / location '...'. Try: gemini-2.5-flash-image.",
+    "hint": "Model '...' not found in project '...' / location '...'. Try: gemini-3.1-flash-image.",
     "docs_url": "https://docs.cloud.google.com/...",
     "log_path": ".../logs/vertex_ai_mcp.log",
     "duration_s": 0.42
@@ -177,7 +187,7 @@ Full request/response logs are written to `logs/vertex_ai_mcp.log`.
 
 ## Prerequisites & Resources
 
-1. **Python** 3.9 or newer
+1. **Python** 3.10 or newer
 2. **Google Cloud Account** with an active project
 3. **Vertex AI API** enabled in your project
 4. **Google Cloud CLI (`gcloud`)** installed and configured
@@ -243,6 +253,10 @@ Create a `.env` file in the project root:
 # Required
 GOOGLE_CLOUD_PROJECT=your-google-cloud-project-id
 GOOGLE_CLOUD_LOCATION=us-central1
+
+# Optional: location for Gemini :generateContent calls (Gemini 3.x image/text
+# models are served from `global` only). Imagen/Veo keep GOOGLE_CLOUD_LOCATION.
+# GOOGLE_CLOUD_GEMINI_LOCATION=global
 
 # Output directory for generated media
 DEFAULT_OUTPUT_DIR=./outputs
@@ -337,8 +351,12 @@ python mcp_server.py
 | `tool_generate_speech` / `tool_embed` / `tool_live_generate` / `tool_analyze_video` return `404 NOT_FOUND` under `GOOGLE_GENAI_BACKEND=vertexai` | The TTS-preview, live-preview, and embedding-preview models used by these tools are **not published to the Vertex AI publisher catalog** — Vertex AI/ADC is not a usable fallback for them, unlike image models | Use `GOOGLE_CLOUD_API_KEY` or `GOOGLE_GENAI_API_KEY` (Gemini API endpoint) for these four tools specifically |
 | Worried a GenAI SDK call will charge your Cloud Billing / free-trial credit | Once billing is enabled on a project, the Gemini API free tier is gone entirely for that project — every call becomes billable from the first token, and some promotional/free-trial credits explicitly **exclude** Gemini API usage regardless | For risk-free testing, create a **separate GCP project with no billing account attached at all** and generate its AI Studio key there (`GOOGLE_GENAI_API_KEY`); verify with `gcloud billing projects describe YOUR_PROJECT` → `billingEnabled: false`. Keep your billed project for Vertex AI (Imagen/Veo/Lyria) only |
 | Edited `.env` but the exact same auth error keeps happening | `config.py` loads `.env` once at process start and `genai_tools._genai_client` is cached for the process lifetime — editing the file does not affect an already-running server | Reconnect the MCP server (`/mcp` → reconnect, or restart the client) after any `.env` change |
-| `404 NOT_FOUND` for `text-embedding-004` | Vertex AI embedding model not available on Gemini API endpoint | Set `GOOGLE_CLOUD_API_KEY` (auto-selects `gemini-embedding-2`) or use ADC |
-| `404 NOT_FOUND` for `gemini-3.1-flash-image` or `gemini-3-pro-image` | These models are **Gemini API only** — not yet on Vertex AI | Use `gemini-2.5-flash-image` / `gemini-2.5-pro-image` for transform, or wait for Vertex AI availability |
+| `404 NOT_FOUND` for `text-embedding-004` | `text-embedding-004` was shut down on the Gemini API (2026-01-14) and retires on Vertex AI on 2027-04-01 | Omit `model` to use the default (`gemini-embedding-2` / `gemini-embedding-001`) |
+| `404 NOT_FOUND` for `gemini-3-pro-image`, `gemini-3.1-flash-lite-image` or `gemini-nano-banana-2.1` on Vertex AI | These models are served from the `global` location only | Leave `GOOGLE_CLOUD_GEMINI_LOCATION` unset (defaults to `global`) |
+| `404` / `NOT_FOUND` for `imagen-4.0-*` | Imagen 4 has been shut down (Gemini API: 2026-08-17) | Use `model_tier` or a Gemini image model (`gemini-3.1-flash-lite-image`, `gemini-nano-banana-2.1`, `gemini-3-pro-image`) |
+| `400 INVALID_ARGUMENT` mentioning `thinking_budget` / `MINIMAL` on `gemini-3.8-flash` / `gemini-4-argon` | These models only accept `thinkingLevel` LOW/MEDIUM/HIGH | Handled automatically by `tool_analyze_image` since v3.3.0 — update the server |
+| `429 RESOURCE_EXHAUSTED` with `limit: 0` for `gemini-4-argon` | The model has no Gemini API free tier | Use a billed key, Vertex AI, or a lower tier (`fast` / `balanced`) |
+| `ModuleNotFoundError: No module named 'mcp.server.fastmcp'` | Server older than v3.3.0 installed with `mcp` 2.x | Update the server (v3.3.0 supports both `mcp` 1.x and 2.x) |
 | `404 NOT_FOUND` for a model | Model not available in your project/region | Run `tool_list_available_models` and pick from `available` list |
 | `gcloud api-keys` command not found | Wrong command prefix | Use `gcloud services api-keys list/create/delete` |
 

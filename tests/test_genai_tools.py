@@ -151,7 +151,8 @@ def test_available_voices_constant():
     from genai_tools import AVAILABLE_VOICES
     assert "Kore" in AVAILABLE_VOICES
     assert "Aoede" in AVAILABLE_VOICES
-    assert len(AVAILABLE_VOICES) == 5
+    assert "Zephyr" in AVAILABLE_VOICES
+    assert len(AVAILABLE_VOICES) == 30
 
 
 # ---- generate_music -------------------------------------------------------
@@ -273,3 +274,43 @@ async def test_generate_music_lyria2_alias(mock_get_client, tmp_path):
     )
     assert result["success"] is True
     assert result["model"] == "lyria-3-clip-preview"
+
+
+@pytest.mark.asyncio
+@patch("genai_tools._get_genai_client")
+async def test_generate_speech_does_not_double_wrap_wav(mock_get_client, tmp_path):
+    """Gemini 3.8 TTS returns a full WAV; it must be written as-is."""
+    wav = genai_tools._wrap_pcm_as_wav(b"\x00\x01" * 10)
+    mock_part = MagicMock()
+    mock_part.inline_data.data = wav
+    mock_candidate = MagicMock()
+    mock_candidate.content.parts = [mock_part]
+    mock_response = MagicMock()
+    mock_response.candidates = [mock_candidate]
+    mock_get_client.return_value.models.generate_content.return_value = mock_response
+
+    out = str(tmp_path / "speech.wav")
+    result = await genai_tools.generate_speech("Hi", output_path=out)
+    assert result["success"] is True
+    with open(out, "rb") as f:
+        assert f.read() == wav
+
+
+@pytest.mark.asyncio
+@patch("genai_tools._get_genai_client")
+async def test_generate_speech_wraps_raw_pcm(mock_get_client, tmp_path):
+    pcm = b"\x00\x01" * 10
+    mock_part = MagicMock()
+    mock_part.inline_data.data = pcm
+    mock_candidate = MagicMock()
+    mock_candidate.content.parts = [mock_part]
+    mock_response = MagicMock()
+    mock_response.candidates = [mock_candidate]
+    mock_get_client.return_value.models.generate_content.return_value = mock_response
+
+    out = str(tmp_path / "speech.wav")
+    await genai_tools.generate_speech("Hi", output_path=out)
+    with open(out, "rb") as f:
+        data = f.read()
+    assert data[:4] == b"RIFF"
+    assert data[44:] == pcm

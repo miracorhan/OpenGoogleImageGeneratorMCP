@@ -16,11 +16,13 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Tuple
 
 from vertexai.generative_models import GenerativeModel, Part, GenerationConfig
-from config import logger, PROJECT_ID, LOCATION
+from config import logger, PROJECT_ID, LOCATION, GEMINI_LOCATION
 
 API_TIMEOUT = 90.0
 UPSCALE_TIMEOUT = 300.0  # upscale is slower; allow up to 5 min
-HTTP_TIMEOUT = 90.0
+# Socket timeout; the user-facing deadline is the per-call _to_thread timeout,
+# so this only has to be at least as long as the longest of those (2K/4K renders).
+HTTP_TIMEOUT = UPSCALE_TIMEOUT
 TOKEN_TIMEOUT = 30.0
 
 _GCLOUD_WINDOWS_FALLBACK = r"C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
@@ -29,6 +31,11 @@ _LOG_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs"
 _DOCS_URL = "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/google-models"
 
 SUPPORTED_IMAGE_MODELS = (
+    "gemini-3.1-flash-lite-image",
+    "gemini-3.1-flash-image",
+    "gemini-nano-banana-2.1",
+    "gemini-3-pro-image",
+    "gemini-2.5-flash-image",
     "imagen-4.0-fast-generate-001",
     "imagen-4.0-generate-001",
     "imagen-4.0-ultra-generate-001",
@@ -56,21 +63,18 @@ _PROBE_CANDIDATES: Tuple[Tuple[str, str, str], ...] = (
     ("imagen-4.0-fast-generate-001",   ":predict",         "image_generation"),
     ("imagen-4.0-generate-001",        ":predict",         "image_generation"),
     ("imagen-4.0-ultra-generate-001",  ":predict",         "image_generation"),
-    ("imagen-3.0-generate-002",        ":predict",         "image_generation"),
     ("imagen-3.0-capability-001",      ":predict",         "image_generation"),
+    ("gemini-3.1-flash-lite-image",    ":generateContent", "image_transformation"),
     ("gemini-3.1-flash-image",         ":generateContent", "image_transformation"),
+    ("gemini-nano-banana-2.1",         ":generateContent", "image_transformation"),
     ("gemini-3-pro-image",             ":generateContent", "image_transformation"),
-    ("gemini-3-flash",                 ":generateContent", "image_transformation"),
     ("gemini-2.5-flash-image",         ":generateContent", "image_transformation"),
-    ("gemini-2.5-flash-image-preview", ":generateContent", "image_transformation"),
+    ("gemini-4-argon",                 ":generateContent", "text"),
+    ("gemini-3.8-flash",               ":generateContent", "text"),
     ("gemini-3.5-flash",               ":generateContent", "text"),
-    ("gemini-3.1-pro",                 ":generateContent", "text"),
-    ("gemini-3-pro",                   ":generateContent", "text"),
-    ("gemini-2.5-pro",                 ":generateContent", "text"),
-    ("gemini-2.5-flash",               ":generateContent", "text"),
-    ("gemini-2.5-flash-live-api",      ":generateContent", "text"),
+    ("gemini-3.5-flash-lite",          ":generateContent", "text"),
     ("gemini-3.1-flash-lite",          ":generateContent", "text"),
-    ("gemini-2.5-flash-lite",          ":generateContent", "text"),
+    ("gemini-3.1-pro-preview",         ":generateContent", "text"),
 )
 
 # Modules-scope cache: {category: [available model names]}
@@ -95,6 +99,98 @@ _RETRY_BASE_DELAY = 5.0  # seconds; doubles each attempt (5 → 10 → 20)
 
 def _is_imagen_model(model_name: str) -> bool:
     return model_name.startswith("imagen") or model_name.startswith("imagegeneration")
+
+
+def _is_gemini_image_model(model_name: str) -> bool:
+    return model_name.startswith("gemini-") and ("image" in model_name or "nano-banana" in model_name)
+
+
+# Aspect ratios accepted by every Gemini image model (2.5 Flash Image is the narrowest set).
+_GEMINI_ASPECT_RATIOS = ("1:1", "3:2", "2:3", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9")
+
+# Models whose imageConfig.imageSize cannot go above 1K (or is unsupported).
+_NO_HIGH_RES_PREFIXES = ("gemini-2.5-", "gemini-3.1-flash-lite-image")
+
+
+def _nearest_aspect_ratio(image_path: str) -> Optional[str]:
+    """Closest supported Gemini aspect ratio to the image on disk, so edits keep its shape."""
+    import math
+    from PIL import Image
+    try:
+        with Image.open(image_path) as img:
+            w, h = img.size
+    except Exception:
+        return None
+    if not w or not h:
+        return None
+    target = math.log(w / h)
+    return min(_GEMINI_ASPECT_RATIOS, key=lambda ar: abs(math.log(int(ar.split(":")[0]) / int(ar.split(":")[1])) - target))
+
+
+# key_color → (key channels, other channels) for chroma keying.
+_CHROMA_KEYS = {
+    "green":   (("g",), ("r", "b")),
+    "blue":    (("b",), ("r", "g")),
+    "magenta": (("r", "b"), ("g",)),
+}
+_CHROMA_HEX = {"green": "#00FF00", "blue": "#0000FF", "magenta": "#FF00FF"}
+
+
+def _chroma_key_to_alpha(image_bytes: bytes, key_color: str = "green", lo: int = 30, hi: int = 90) -> bytes:
+    """Turn a solid chroma-key background into transparency and return RGBA PNG bytes.
+
+    A pixel's "keyness" is min(key channels) - max(other channels): <= lo stays
+    opaque, >= hi becomes fully transparent, in between is a soft edge. Key-colour
+    spill is removed from the semi-transparent edge pixels.
+    """
+    import io
+    from PIL import Image, ImageChops
+    key, other = _CHROMA_KEYS[key_color]
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    channels = dict(zip("rgb", img.split()))
+    key_min = functools.reduce(ImageChops.darker, [channels[c] for c in key])
+    other_max = functools.reduce(ImageChops.lighter, [channels[c] for c in other])
+    keyness = ImageChops.subtract(key_min, other_max)  # clamps at 0
+    alpha = keyness.point(lambda v: 255 if v <= lo else 0 if v >= hi else (255 * (hi - v)) // (hi - lo))
+    edge = alpha.point(lambda v: 255 if v < 255 else 0)
+    out = [
+        Image.composite(ImageChops.darker(channels[c], other_max), channels[c], edge) if c in key else channels[c]
+        for c in "rgb"
+    ]
+    buf = io.BytesIO()
+    Image.merge("RGBA", (*out, alpha)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+_MASK_NOTE = (
+    "The second image is a mask for the first image: white marks the region to change, "
+    "black marks pixels that must stay exactly as they are. "
+)
+
+_GEMINI_EDIT_INSTRUCTIONS = {
+    "EDIT_MODE_DEFAULT": "Edit the image as follows: {prompt}. Keep everything not mentioned unchanged.",
+    "EDIT_MODE_INPAINT_INSERTION": _MASK_NOTE + "Inside the white region, add: {prompt}. Blend it naturally with the scene.",
+    "EDIT_MODE_INPAINT_REMOVAL": _MASK_NOTE + "Remove the content inside the white region and fill it seamlessly with "
+                                 "the surrounding background. {prompt}",
+    "EDIT_MODE_OUTPAINT": _MASK_NOTE + "Fill the white region by extending the existing scene beyond its original "
+                          "borders, matching perspective, lighting and style. {prompt}",
+    "EDIT_MODE_BGSWAP": "Keep the main subject exactly as it is and replace the background with: {prompt}.",
+    "EDIT_MODE_PRODUCT_IMAGE": "Create a professional product photograph of the product shown: {prompt}. Keep the "
+                               "product's shape, colours, label and details identical.",
+}
+
+_UPSCALE_INSTRUCTION = (
+    "Upscale this image to a higher resolution. Reproduce it exactly: identical composition, framing, "
+    "colours, text and content. Only increase sharpness and fine detail; do not add, remove or restyle anything."
+)
+
+
+def _publisher_model_url(model_name: str, endpoint: str, location: str) -> str:
+    host = "aiplatform.googleapis.com" if location == "global" else f"{location}-aiplatform.googleapis.com"
+    return (
+        f"https://{host}/v1/projects/{PROJECT_ID}"
+        f"/locations/{location}/publishers/google/models/{model_name}{endpoint}"
+    )
 
 
 def _save_image_bytes(image_bytes: bytes, output_path: str) -> None:
@@ -297,14 +393,15 @@ def _hint_for(code: int, model_name: str, endpoint: str, detail: str, retry_afte
         )
     if code == 404:
         category = (
-            "image_transformation" if endpoint == ":generateContent" and "image" in model_name
+            "image_transformation" if endpoint == ":generateContent" and _is_gemini_image_model(model_name)
             else "image_generation" if endpoint == ":predict"
             else "text" if endpoint == ":generateContent"
             else ""
         )
         alts = _alternatives_for(category, excluding=model_name) if category else []
         alt_str = f" Try: {', '.join(alts)}." if alts else " Run tool_list_available_models for a live list."
-        return f"Model '{model_name}' not found in project '{PROJECT_ID}' / location '{LOCATION}'.{alt_str}"
+        location = GEMINI_LOCATION if endpoint == ":generateContent" else LOCATION
+        return f"Model '{model_name}' not found in project '{PROJECT_ID}' / location '{location}'.{alt_str}"
     if code == 429:
         ra = f" Retry after {retry_after}s." if retry_after else ""
         return f"Quota exceeded for {model_name} in {LOCATION}.{ra} Or request a quota increase."
@@ -419,19 +516,13 @@ def _vertex_post(url: str, payload: dict, model_name: str, endpoint_tag: str) ->
 
 def _imagen_predict(model_name: str, payload: dict) -> dict:
     """Synchronous REST call to publisher model :predict endpoint."""
-    url = (
-        f"https://{LOCATION}-aiplatform.googleapis.com/v1/projects/{PROJECT_ID}"
-        f"/locations/{LOCATION}/publishers/google/models/{model_name}:predict"
-    )
+    url = _publisher_model_url(model_name, ":predict", LOCATION)
     return _vertex_post(url, payload, model_name, ":predict")
 
 
 def _gemini_generate_content(model_name: str, contents: list, generation_config: Optional[dict] = None) -> dict:
-    """Synchronous REST call to publisher model :generateContent endpoint."""
-    url = (
-        f"https://{LOCATION}-aiplatform.googleapis.com/v1/projects/{PROJECT_ID}"
-        f"/locations/{LOCATION}/publishers/google/models/{model_name}:generateContent"
-    )
+    """Synchronous REST call to publisher model :generateContent endpoint (GEMINI_LOCATION)."""
+    url = _publisher_model_url(model_name, ":generateContent", GEMINI_LOCATION)
     payload: Dict[str, Any] = {"contents": contents}
     if generation_config:
         payload["generationConfig"] = generation_config
@@ -488,12 +579,14 @@ def _extract_gemini_text(response: dict) -> Optional[str]:
 
 def _probe_one(model_name: str, endpoint: str) -> bool:
     """Returns True if model responds 200 or 400 (= reachable). False on 404."""
-    url = (
-        f"https://{LOCATION}-aiplatform.googleapis.com/v1/projects/{PROJECT_ID}"
-        f"/locations/{LOCATION}/publishers/google/models/{model_name}{endpoint}"
-    )
-    body = b'{"instances":[{}],"parameters":{}}' if endpoint == ":predict" \
-        else b'{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}'
+    location = GEMINI_LOCATION if endpoint == ":generateContent" else LOCATION
+    url = _publisher_model_url(model_name, endpoint, location)
+    # Payloads are chosen to be rejected (400) by existing models so the probe never
+    # bills a generation, while missing models still return 404. An empty :predict
+    # instance is rejected with 400 "Empty instances" *before* the model lookup —
+    # even for models that do not exist — so the instance must be non-empty.
+    body = b'{"instances":[{"prompt":""}],"parameters":{"sampleCount":0}}' if endpoint == ":predict" \
+        else b'{"contents":[]}'
     try:
         token = _get_access_token()
     except Exception as e:
@@ -503,7 +596,7 @@ def _probe_one(model_name: str, endpoint: str) -> bool:
     req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Content-Type", "application/json")
     try:
-        # 20s: some Gemini endpoints take 15-20s even for a trivial "hi" prompt
+        # 20s: some Gemini endpoints take 15-20s to answer even a rejected request
         urllib.request.urlopen(req, timeout=20)
         return True
     except urllib.error.HTTPError as e:
@@ -565,7 +658,7 @@ def get_cached_availability() -> Dict[str, Any]:
 async def generate_image(
     prompt: str,
     output_path: Optional[str] = None,
-    model_name: str = "imagen-4.0-fast-generate-001",
+    model_name: str = "gemini-3.1-flash-lite-image",
     number_of_images: int = 1,
     aspect_ratio: str = "1:1",
     return_base64: bool = False,
@@ -584,6 +677,19 @@ async def generate_image(
         f"[generate_image] START | model={model_name} | prompt='{prompt[:80]}' | "
         f"aspect={aspect_ratio} | n={number_of_images}"
     )
+
+    # Gemini image models (Imagen's replacement) use :generateContent; Imagen-only
+    # options (negative_prompt, seed, watermark, safety, storage_uri) do not apply.
+    if _is_gemini_image_model(model_name):
+        return await gemini_generate_image(
+            prompt=prompt,
+            output_path=output_path,
+            model_name=model_name,
+            return_base64=return_base64,
+            save_format=output_format.lower(),
+            aspect_ratio=aspect_ratio,
+            number_of_images=number_of_images,
+        )
 
     if not _is_imagen_model(model_name):
         return {"success": False, "error": _build_validation_error(_unsupported_image_model_error(model_name))}
@@ -658,51 +764,63 @@ async def generate_image(
 async def gemini_generate_image(
     prompt: str,
     output_path: Optional[str] = None,
-    model_name: str = "gemini-2.5-flash-image",
+    model_name: str = "gemini-3.1-flash-lite-image",
     return_base64: bool = False,
     save_format: str = "png",
+    aspect_ratio: Optional[str] = None,
+    number_of_images: int = 1,
 ) -> Dict[str, Any]:
     """Text-to-image generation via Gemini multimodal models (no input image required).
-    Used when model_tier='balanced' or a gemini-*-image model is specified directly.
+    Used for every generate tier and whenever a gemini-*-image model is specified directly.
+    Gemini returns one image per request, so number_of_images > 1 issues sequential calls.
     """
     t0 = time.time()
-    logger.info(f"[gemini_generate_image] START | model={model_name} | prompt='{prompt[:80]}'")
+    logger.info(f"[gemini_generate_image] START | model={model_name} | prompt='{prompt[:80]}' | n={number_of_images}")
 
     try:
         contents = [{"role": "user", "parts": [{"text": prompt}]}]
-        generation_config = {"responseModalities": ["IMAGE", "TEXT"]}
+        generation_config: Dict[str, Any] = {"responseModalities": ["IMAGE", "TEXT"]}
+        if aspect_ratio:
+            generation_config["imageConfig"] = {"aspectRatio": aspect_ratio}
 
-        response = await _api_call_with_retry(
-            _gemini_generate_content, model_name, contents, generation_config, timeout=API_TIMEOUT
-        )
-        image_bytes = _extract_gemini_image_bytes(response)
-        if not image_bytes:
-            text_fallback = _extract_gemini_text(response)
-            err_msg = (
-                f"Model returned no image. Text: {text_fallback[:200]!r}"
-                if text_fallback else
-                f"Model returned no image. Response keys: {list(response.keys())}"
+        results = []
+        for i in range(number_of_images):
+            response = await _api_call_with_retry(
+                _gemini_generate_content, model_name, contents, generation_config, timeout=API_TIMEOUT
             )
-            return {"success": False, "error": _build_unexpected_error(
-                model_name, ":generateContent", ValueError(err_msg), time.time() - t0
-            )}
+            image_bytes = _extract_gemini_image_bytes(response)
+            if not image_bytes:
+                text_fallback = _extract_gemini_text(response)
+                err_msg = (
+                    f"Model returned no image. Text: {text_fallback[:200]!r}"
+                    if text_fallback else
+                    f"Model returned no image. Response keys: {list(response.keys())}"
+                )
+                return {"success": False, "error": _build_unexpected_error(
+                    model_name, ":generateContent", ValueError(err_msg), time.time() - t0
+                )}
 
-        res: Dict[str, Any] = {}
-        if return_base64:
-            res["base64"] = _encode_base64(image_bytes)
-            res["mime_type"] = "image/png"
-        if output_path:
-            if save_format != "png":
-                from format_converter import save_with_format
-                final_path, mime = save_with_format(image_bytes, output_path, save_format)
-                res["path"] = final_path
-                res["mime_type"] = mime
-            else:
-                _save_image_bytes(image_bytes, output_path)
-                res["path"] = output_path
+            res: Dict[str, Any] = {}
+            if return_base64:
+                res["base64"] = _encode_base64(image_bytes)
+                res["mime_type"] = "image/png"
+            if output_path:
+                current_out = output_path
+                if number_of_images > 1:
+                    base, ext = os.path.splitext(output_path)
+                    current_out = f"{base}_{i}{ext}"
+                if save_format != "png":
+                    from format_converter import save_with_format
+                    final_path, mime = save_with_format(image_bytes, current_out, save_format)
+                    res["path"] = final_path
+                    res["mime_type"] = mime
+                else:
+                    _save_image_bytes(image_bytes, current_out)
+                    res["path"] = current_out
+            results.append(res)
 
         logger.info(f"[gemini_generate_image] SUCCESS in {time.time()-t0:.1f}s")
-        return {"success": True, "results": [res]}
+        return {"success": True, "results": results}
 
     except VertexAPIError as e:
         return {"success": False, "error": e.error_dict}
@@ -718,13 +836,16 @@ async def edit_image(
     output_path: Optional[str] = None,
     mask_image_path: Optional[str] = None,
     edit_mode: str = "EDIT_MODE_DEFAULT",
-    model_name: str = "imagen-3.0-capability-001",
+    model_name: str = "gemini-3.1-flash-image",
     negative_prompt: Optional[str] = None,
     sample_count: int = 1,
     return_base64: bool = False,
     save_format: str = "png",
 ) -> Dict[str, Any]:
-    """Precision image editing via Imagen 3 Capability.
+    """Image editing via Gemini image models (default) or legacy Imagen 3 Capability.
+
+    Gemini models receive the mask as a second reference image plus a mode-specific
+    instruction; Imagen models use the referenceImages[] :predict schema.
 
     Supported edit_mode values:
       EDIT_MODE_DEFAULT          — mask-free, prompt-driven full image edit
@@ -741,7 +862,7 @@ async def edit_image(
     )
 
     # ---- Validation (no HTTP if invalid) ----
-    if not _is_imagen_model(model_name):
+    if not (_is_imagen_model(model_name) or _is_gemini_image_model(model_name)):
         return {"success": False, "error": _build_validation_error(_unsupported_image_model_error(model_name))}
     if edit_mode not in SUPPORTED_EDIT_MODES:
         return {"success": False, "error": _build_validation_error(
@@ -763,6 +884,35 @@ async def edit_image(
         return {"success": False, "error": _build_validation_error(
             f"sample_count must be in [1, 4], got {sample_count}."
         )}
+
+    if _is_gemini_image_model(model_name):
+        instruction = _GEMINI_EDIT_INSTRUCTIONS[edit_mode].format(prompt=prompt)
+        if mask_image_path and edit_mode not in MASK_REQUIRED_MODES:
+            instruction = _MASK_NOTE + instruction
+        if negative_prompt:
+            instruction += f" Do not include: {negative_prompt}."
+        aspect = _nearest_aspect_ratio(base_image_path)
+        results: List[Dict[str, Any]] = []
+        for i in range(sample_count):
+            current_out = output_path
+            if output_path and sample_count > 1:
+                base, ext = os.path.splitext(output_path)
+                current_out = f"{base}_{i}{ext}"
+            r = await transform_image(
+                prompt=instruction,
+                base_image_path=base_image_path,
+                output_path=current_out,
+                additional_image_paths=[mask_image_path] if mask_image_path else None,
+                model_name=model_name,
+                return_base64=return_base64,
+                save_format=save_format,
+                image_config={"aspectRatio": aspect} if aspect else None,
+            )
+            if not r.get("success"):
+                return r
+            results.extend(r["results"])
+        logger.info(f"[edit_image] SUCCESS (gemini) in {time.time()-t0:.1f}s (n={len(results)})")
+        return {"success": True, "results": results}
 
     try:
         base_b64 = _read_image_b64(base_image_path)
@@ -845,11 +995,16 @@ async def transform_image(
     base_image_path: str,
     output_path: Optional[str] = None,
     additional_image_paths: Optional[List[str]] = None,
-    model_name: str = "gemini-2.5-flash-image",
+    model_name: str = "gemini-3.1-flash-image",
     return_base64: bool = False,
     save_format: str = "png",
+    image_config: Optional[Dict[str, Any]] = None,
+    timeout: float = API_TIMEOUT,
 ) -> Dict[str, Any]:
     """Free-form natural-language image transformation via Gemini multimodal models.
+
+    image_config is passed through as generationConfig.imageConfig
+    (e.g. {"aspectRatio": "16:9", "imageSize": "2K"}).
 
     Accepts a base image plus optional additional reference images and a prompt.
     Returns an image generated by the model. Use this for style transfers,
@@ -886,10 +1041,12 @@ async def transform_image(
         parts.append({"text": prompt})
 
         contents = [{"role": "user", "parts": parts}]
-        generation_config = {"responseModalities": ["IMAGE", "TEXT"]}
+        generation_config: Dict[str, Any] = {"responseModalities": ["IMAGE", "TEXT"]}
+        if image_config:
+            generation_config["imageConfig"] = image_config
 
         response = await _api_call_with_retry(
-            _gemini_generate_content, model_name, contents, generation_config, timeout=API_TIMEOUT
+            _gemini_generate_content, model_name, contents, generation_config, timeout=timeout
         )
         image_bytes = _extract_gemini_image_bytes(response)
         if not image_bytes:
@@ -934,6 +1091,23 @@ _THINKING_BUDGET_MAP = {
     "HIGH": 8192,
 }
 
+# Gemini 3.8 Flash and 4 Argon reject thinking_level=MINIMAL with HTTP 400.
+_NO_MINIMAL_THINKING_PREFIXES = ("gemini-3.8-flash", "gemini-4-")
+
+
+def _thinking_config(model_name: str, thinking_level: str) -> Dict[str, Any]:
+    """Gemini 2.x takes a token thinkingBudget; Gemini 3+ takes a thinkingLevel and
+    returns HTTP 400 for thinkingBudget on 3.8 Flash / 4 Argon."""
+    level = thinking_level.upper()
+    if level not in _THINKING_BUDGET_MAP:
+        level = "HIGH"
+    if model_name.startswith("gemini-2."):
+        return {"thinkingBudget": _THINKING_BUDGET_MAP[level]}
+    if level == "MINIMAL" and model_name.startswith(_NO_MINIMAL_THINKING_PREFIXES):
+        level = "LOW"
+    return {"thinkingLevel": level}
+
+
 _MEDIA_RESOLUTION_MAP = {
     "LOW": "MEDIA_RESOLUTION_LOW",
     "MEDIUM": "MEDIA_RESOLUTION_MEDIUM",
@@ -945,7 +1119,7 @@ _MEDIA_RESOLUTION_MAP = {
 async def analyze_image(
     prompt: str,
     image_path: str,
-    model_name: str = "gemini-2.5-flash",
+    model_name: str = "gemini-3.8-flash",
     safety_settings: Optional[Dict] = None,
     thinking_level: str = "HIGH",
     media_resolution: str = "MEDIUM",
@@ -962,9 +1136,8 @@ async def analyze_image(
             {"text": prompt},
         ]}]
 
-        budget = _THINKING_BUDGET_MAP.get(thinking_level.upper(), _THINKING_BUDGET_MAP["HIGH"])
         generation_config: Dict[str, Any] = {
-            "thinkingConfig": {"thinkingBudget": budget},
+            "thinkingConfig": _thinking_config(model_name, thinking_level),
             "mediaResolution": _MEDIA_RESOLUTION_MAP.get(media_resolution.upper(), "MEDIA_RESOLUTION_MEDIUM"),
         }
 
@@ -993,17 +1166,45 @@ async def analyze_image(
 async def upscale_image(
     base_image_path: str,
     output_path: Optional[str] = None,
-    model_name: str = "imagen-3.0-generate-002",
+    model_name: str = "gemini-3.1-flash-image",
     return_base64: bool = False,
     save_format: str = "png",
+    target_resolution: str = "2K",
 ) -> Dict[str, Any]:
+    """Upscale an image. Gemini models re-render it at target_resolution ("2K"/"4K")
+    keeping its aspect ratio; legacy Imagen models use the x2 :predict upscaler."""
     t0 = time.time()
-    logger.info(f"[upscale_image] START | model={model_name} | base={base_image_path}")
+    logger.info(f"[upscale_image] START | model={model_name} | base={base_image_path} | target={target_resolution}")
 
-    if not _is_imagen_model(model_name):
+    if not (_is_imagen_model(model_name) or _is_gemini_image_model(model_name)):
         return {"success": False, "error": _build_validation_error(_unsupported_image_model_error(model_name))}
     if not os.path.exists(base_image_path):
         return {"success": False, "error": _build_validation_error(f"Image not found: {base_image_path}")}
+
+    if _is_gemini_image_model(model_name):
+        if target_resolution not in ("2K", "4K"):
+            return {"success": False, "error": _build_validation_error(
+                f"target_resolution must be '2K' or '4K', got {target_resolution!r}."
+            )}
+        if model_name.startswith(_NO_HIGH_RES_PREFIXES):
+            return {"success": False, "error": _build_validation_error(
+                f"Model '{model_name}' cannot output above 1K. Use gemini-3.1-flash-image, "
+                f"gemini-nano-banana-2.1 or gemini-3-pro-image for upscaling."
+            )}
+        image_config: Dict[str, Any] = {"imageSize": target_resolution}
+        aspect = _nearest_aspect_ratio(base_image_path)
+        if aspect:
+            image_config["aspectRatio"] = aspect
+        return await transform_image(
+            prompt=_UPSCALE_INSTRUCTION,
+            base_image_path=base_image_path,
+            output_path=output_path,
+            model_name=model_name,
+            return_base64=return_base64,
+            save_format=save_format,
+            image_config=image_config,
+            timeout=UPSCALE_TIMEOUT,
+        )
 
     try:
         base_b64 = _read_image_b64(base_image_path)
@@ -1048,16 +1249,61 @@ async def upscale_image(
 async def remove_background(
     base_image_path: str,
     output_path: Optional[str] = None,
-    model_name: str = "imagen-3.0-capability-001",
+    model_name: str = "gemini-3.1-flash-image",
     return_base64: bool = False,
+    key_color: str = "green",
+    subject: Optional[str] = None,
 ) -> Dict[str, Any]:
-    t0 = time.time()
-    logger.info(f"[remove_background] START | model={model_name} | base={base_image_path}")
+    """Remove the background and return a transparent PNG.
 
-    if not _is_imagen_model(model_name):
+    Gemini cannot emit an alpha channel, so it is asked to put the subject on a flat
+    chroma-key background (key_color) which is then keyed out locally. Pick a
+    key_color that does not occur in the subject. `subject` optionally names what
+    to keep (default: the single most prominent foreground object). Legacy Imagen
+    models use BGSWAP.
+    """
+    t0 = time.time()
+    logger.info(f"[remove_background] START | model={model_name} | base={base_image_path} | key={key_color}")
+
+    if not (_is_imagen_model(model_name) or _is_gemini_image_model(model_name)):
         return {"success": False, "error": _build_validation_error(_unsupported_image_model_error(model_name))}
     if not os.path.exists(base_image_path):
         return {"success": False, "error": _build_validation_error(f"Image not found: {base_image_path}")}
+
+    if _is_gemini_image_model(model_name):
+        if key_color not in _CHROMA_KEYS:
+            return {"success": False, "error": _build_validation_error(
+                f"key_color must be one of {', '.join(_CHROMA_KEYS)}, got {key_color!r}."
+            )}
+        aspect = _nearest_aspect_ratio(base_image_path)
+        r = await transform_image(
+            prompt=(
+                f"Isolate {subject or 'only the single main subject (the most prominent foreground object)'}. "
+                "Keep it exactly as it is — same pose, size, position, colours, details and edges. Remove everything "
+                "else: other objects, the table or floor it stands on, and the background. Fill all removed areas "
+                f"with a perfectly flat, uniform pure {key_color} ({_CHROMA_HEX[key_color]}) chroma-key colour. "
+                f"No shadows, gradients, reflections, or {key_color} spill on the subject."
+            ),
+            base_image_path=base_image_path,
+            model_name=model_name,
+            return_base64=True,
+            image_config={"aspectRatio": aspect} if aspect else None,
+        )
+        if not r.get("success"):
+            return r
+        try:
+            png = _chroma_key_to_alpha(base64.b64decode(r["results"][0]["base64"]), key_color)
+        except Exception as e:
+            return {"success": False, "error": _build_unexpected_error(model_name, ":generateContent", e, time.time() - t0)}
+        res: Dict[str, Any] = {"mime_type": "image/png"}
+        if return_base64:
+            res["base64"] = _encode_base64(png)
+        if output_path:
+            final_path = os.path.splitext(output_path)[0] + ".png"  # alpha needs PNG
+            _save_image_bytes(png, final_path)
+            res["path"] = final_path
+        logger.info(f"[remove_background] SUCCESS (gemini) in {time.time()-t0:.1f}s")
+        return {"success": True, "results": [res]}
 
     try:
         base_b64 = _read_image_b64(base_image_path)
@@ -1245,7 +1491,7 @@ async def batch_generate(
     prompts: List[str],
     output_prefix: str,
     output_dir: Optional[str] = None,
-    model_name: str = "imagen-4.0-fast-generate-001",
+    model_name: str = "gemini-3.1-flash-lite-image",
     aspect_ratio: str = "1:1",
 ) -> Dict[str, Any]:
     """Generate images for multiple prompts in parallel (max 4 concurrent)."""

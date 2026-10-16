@@ -9,7 +9,7 @@ import threading
 import time
 from typing import Any, Dict, Optional
 
-from config import logger, PROJECT_ID, LOCATION, GOOGLE_GENAI_API_KEY, GOOGLE_GENAI_BACKEND, GOOGLE_CLOUD_API_KEY
+from config import logger, PROJECT_ID, GEMINI_LOCATION, GOOGLE_GENAI_API_KEY, GOOGLE_GENAI_BACKEND, GOOGLE_CLOUD_API_KEY
 
 try:
     import google.genai as google_genai
@@ -20,7 +20,14 @@ except ImportError:
     genai_types = None   # type: ignore
     _GENAI_AVAILABLE = False
 
-AVAILABLE_VOICES = ("Aoede", "Charon", "Fenrir", "Kore", "Puck")
+# The 30 prebuilt Gemini TTS voices.
+AVAILABLE_VOICES = (
+    "Achernar", "Achird", "Algenib", "Algieba", "Alnilam", "Aoede", "Autonoe",
+    "Callirrhoe", "Charon", "Despina", "Enceladus", "Erinome", "Fenrir", "Gacrux",
+    "Iapetus", "Kore", "Laomedeia", "Leda", "Orus", "Puck", "Pulcherrima",
+    "Rasalgethi", "Sadachbia", "Sadaltager", "Schedar", "Sulafat", "Umbriel",
+    "Vindemiatrix", "Zephyr", "Zubenelgenubi",
+)
 
 _genai_client = None
 _genai_client_lock = threading.Lock()
@@ -133,7 +140,7 @@ def _get_genai_client():
                     "Required for Vertex AI backend of google-genai SDK."
                 )
             creds = _build_adc_credentials()
-            kwargs = {"vertexai": True, "project": PROJECT_ID, "location": LOCATION}
+            kwargs = {"vertexai": True, "project": PROJECT_ID, "location": GEMINI_LOCATION}
             if creds is not None:
                 kwargs["credentials"] = creds
                 logger.info(f"[genai] Initialized Vertex AI backend with ADC credentials (project={PROJECT_ID})")
@@ -298,8 +305,10 @@ async def generate_speech(
             )
 
         response = await _to_thread(_do_request, timeout=60.0)
-        raw_pcm = response.candidates[0].content.parts[0].inline_data.data
-        wav_bytes = _wrap_pcm_as_wav(raw_pcm)
+        audio = response.candidates[0].content.parts[0].inline_data.data
+        # Gemini 3.8 TTS returns a complete WAV (RIFF header); earlier TTS models
+        # returned headerless Linear16 PCM that must be wrapped.
+        wav_bytes = audio if audio[:4] == b"RIFF" else _wrap_pcm_as_wav(audio)
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         with open(output_path, "wb") as f:
             f.write(wav_bytes)

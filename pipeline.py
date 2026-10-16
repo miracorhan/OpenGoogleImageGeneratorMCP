@@ -28,10 +28,10 @@ _FIRST_STEP_TOOLS = {"generate"}  # tools that create images without a base_imag
 
 _TOOL_TYPE_FOR_TIER = {
     "generate":          "generate",
-    "edit":              "generate",
+    "edit":              "edit",
     "transform":         "transform",
-    "upscale":           "generate",
-    "remove_background": "generate",
+    "upscale":           "upscale",
+    "remove_background": "edit",
 }
 
 

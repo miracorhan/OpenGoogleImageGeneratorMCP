@@ -4,7 +4,10 @@
 import asyncio
 import os
 from typing import Literal, Optional, List
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.mcpserver import MCPServer as FastMCP  # mcp >= 2.0
+except ImportError:
+    from mcp.server.fastmcp import FastMCP  # mcp 1.x
 from pydantic import BaseModel, Field
 
 import google.auth
@@ -23,7 +26,7 @@ from vertex_ai_tools import (
     SUPPORTED_EDIT_MODES,
 )
 from pipeline import run_pipeline
-from config import PROJECT_ID, LOCATION, DEFAULT_OUTPUT_DIR, GOOGLE_ACCESS_TOKEN, IMPERSONATE_SERVICE_ACCOUNT, logger, check_for_updates, __version__
+from config import PROJECT_ID, LOCATION, GEMINI_LOCATION, DEFAULT_OUTPUT_DIR, GOOGLE_ACCESS_TOKEN, IMPERSONATE_SERVICE_ACCOUNT, logger, check_for_updates, __version__
 from discovery import get_recommended_models
 
 # Initialize the MCP Server
@@ -77,6 +80,7 @@ async def tool_list_available_models(force_refresh: bool = False) -> dict:
         "checked_at": cached.get("checked_at"),
         "project": PROJECT_ID,
         "location": LOCATION,
+        "gemini_location": GEMINI_LOCATION,
         "duration_s": round(_t.time() - t0, 2),
         "update": update_info,
     }
@@ -89,14 +93,19 @@ class GenerateImageParams(BaseModel):
     output_filename: Optional[str] = Field(None, description="Filename to save the image as (e.g. image.png). Required if output_path not given.")
     output_path: Optional[str] = Field(None, description="Absolute path for the output file (e.g. C:/outputs/image.png). Takes priority over output_filename.")
     model_name: str = Field(
-        "imagen-4.0-fast-generate-001",
-        description="Imagen model. GA: imagen-4.0-fast-generate-001 (fast, default), imagen-4.0-generate-001 (quality), imagen-4.0-ultra-generate-001 (ultra), imagen-3.0-generate-002 (stable).",
+        "gemini-3.1-flash-lite-image",
+        description=(
+            "Image model. Gemini (Nano Banana): gemini-3.1-flash-lite-image (default, fastest), "
+            "gemini-3.1-flash-image, gemini-nano-banana-2.1, gemini-3-pro-image (highest quality), "
+            "gemini-2.5-flash-image (legacy). Legacy Imagen IDs (imagen-4.0-*) are still accepted but "
+            "Imagen 4 has been shut down by Google."
+        ),
     )
-    model_tier: Optional[Literal["fast", "balanced", "quality", "ultra"]] = Field(None, description="Shorthand tier: fast / balanced / quality / ultra. Overrides model_name when set. balanced routes to gemini-2.5-flash-image.")
-    number_of_images: int = Field(1, ge=1, le=4, description="Number of images to generate.")
+    model_tier: Optional[Literal["fast", "balanced", "quality", "ultra"]] = Field(None, description="Shorthand tier. Overrides model_name. fast → gemini-3.1-flash-lite-image, balanced → gemini-3.1-flash-image, quality → gemini-nano-banana-2.1, ultra → gemini-3-pro-image.")
+    number_of_images: int = Field(1, ge=1, le=4, description="Number of images to generate (Gemini models issue one request per image).")
     aspect_ratio: str = Field("1:1", description="Aspect ratio (e.g., 1:1, 16:9, 4:3, 9:16).")
     return_base64: bool = Field(False, description="Whether to return the base64 encoded image.")
-    negative_prompt: Optional[str] = Field(None, description="Elements to exclude from the image.")
+    negative_prompt: Optional[str] = Field(None, description="Elements to exclude from the image (Imagen only).")
     seed: Optional[int] = Field(None, description="Seed for deterministic output. Requires add_watermark=False.")
     enhance_prompt: bool = Field(True, description="Use LLM-based prompt rewriting for better results.")
     add_watermark: bool = Field(True, description="Add SynthID digital watermark. Must be False when seed is set.")
@@ -109,9 +118,9 @@ class GenerateImageParams(BaseModel):
 @mcp.tool()
 async def tool_generate_image(params: GenerateImageParams) -> dict:
     """
-    Generate an image from a text prompt using Vertex AI Imagen or Gemini.
+    Generate an image from a text prompt using Vertex AI Gemini image models (Nano Banana).
     Use model_tier for simple model selection: fast/balanced/quality/ultra.
-    balanced routes to gemini-2.5-flash-image (Gemini API path).
+    negative_prompt / seed / watermark / safety / storage_uri apply to legacy Imagen models only.
     """
     from model_registry import resolve_model
 
@@ -126,7 +135,7 @@ async def tool_generate_image(params: GenerateImageParams) -> dict:
         return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
 
     resolved_model = params.model_name
-    api_backend = "imagen"
+    api_backend = "gemini" if params.model_name.startswith("gemini-") else "imagen"
     if params.model_tier:
         resolved_model, api_backend = resolve_model(params.model_tier, "generate")
 
@@ -137,6 +146,8 @@ async def tool_generate_image(params: GenerateImageParams) -> dict:
             model_name=resolved_model,
             return_base64=params.return_base64,
             save_format=params.output_format.lower(),
+            aspect_ratio=params.aspect_ratio,
+            number_of_images=params.number_of_images,
         )
 
     return await generate_image(
@@ -179,12 +190,15 @@ class EditImageParams(BaseModel):
         ),
     )
     model_name: str = Field(
-        "imagen-3.0-capability-001",
+        "gemini-3.1-flash-image",
         description=(
-            "Image edit model. Default: imagen-3.0-capability-001 (full mask + edit-mode support). "
-            "Fallback: imagen-3.0-generate-002 (legacy schema, no mask, EDIT_MODE_DEFAULT only)."
+            "Image edit model. Default: gemini-3.1-flash-image. Also: gemini-3.1-flash-lite-image (fastest), "
+            "gemini-nano-banana-2.1, gemini-3-pro-image (most precise). The mask is sent to Gemini as a "
+            "reference image with a mode-specific instruction. Legacy imagen-3.0-capability-001 is still "
+            "accepted but Imagen has been shut down by Google."
         ),
     )
+    model_tier: Optional[Literal["fast", "balanced", "quality", "ultra"]] = Field(None, description="Shorthand tier. Overrides model_name. fast → gemini-3.1-flash-lite-image, balanced → gemini-3.1-flash-image, quality → gemini-nano-banana-2.1, ultra → gemini-3-pro-image.")
     negative_prompt: Optional[str] = Field(None, description="Optional negative prompt.")
     sample_count: int = Field(1, ge=1, le=4, description="Number of edited samples to generate.")
     return_base64: bool = Field(False, description="Whether to return the base64-encoded image.")
@@ -193,11 +207,13 @@ class EditImageParams(BaseModel):
 @mcp.tool()
 async def tool_edit_image(params: EditImageParams) -> dict:
     """
-    Precision image editing via Imagen 3 Capability — mask-based inpaint/outpaint,
+    Image editing via Gemini image models — mask-guided inpaint/outpaint,
     background swap, product image, or mask-free prompt-driven edit.
     For free-form natural-language transforms (style transfer, scene rewriting),
     use tool_transform_image instead.
     """
+    from model_registry import resolve_model
+
     if params.output_path:
         try:
             final_path = _validate_output_path(params.output_path)
@@ -208,13 +224,17 @@ async def tool_edit_image(params: EditImageParams) -> dict:
     else:
         return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
 
+    resolved_model = params.model_name
+    if params.model_tier:
+        resolved_model, _ = resolve_model(params.model_tier, "edit")
+
     return await edit_image(
         prompt=params.prompt,
         base_image_path=params.base_image_path,
         output_path=final_path,
         mask_image_path=params.mask_image_path,
         edit_mode=params.edit_mode,
-        model_name=params.model_name,
+        model_name=resolved_model,
         negative_prompt=params.negative_prompt,
         sample_count=params.sample_count,
         return_base64=params.return_base64,
@@ -227,16 +247,17 @@ class TransformImageParams(BaseModel):
     base_image_path: str = Field(..., description="Path to the primary input image.")
     output_filename: Optional[str] = Field(None, description="Name of the file to save the transformed image as.")
     output_path: Optional[str] = Field(None, description="Absolute path for the output file. Takes priority over output_filename.")
-    model_tier: Optional[Literal["fast", "balanced", "quality", "ultra"]] = Field(None, description="Shorthand tier: fast / balanced / quality / ultra. Overrides model_name. fast/balanced → gemini-2.5-flash-image, quality/ultra → gemini-2.5-pro-image.")
+    model_tier: Optional[Literal["fast", "balanced", "quality", "ultra"]] = Field(None, description="Shorthand tier. Overrides model_name. fast → gemini-3.1-flash-lite-image, balanced → gemini-3.1-flash-image, quality → gemini-nano-banana-2.1, ultra → gemini-3-pro-image.")
     additional_image_paths: Optional[List[str]] = Field(
         None,
         description="Optional list of additional reference image paths (e.g. style refs).",
     )
     model_name: str = Field(
-        "gemini-2.5-flash-image",
+        "gemini-3.1-flash-image",
         description=(
-            "Gemini image model. Vertex AI available: gemini-2.5-flash-image (default), gemini-2.5-pro-image. "
-            "Newer (Gemini API only): gemini-3.1-flash-image, gemini-3-pro-image."
+            "Gemini image model: gemini-3.1-flash-image (default), gemini-3.1-flash-lite-image (fastest), "
+            "gemini-nano-banana-2.1, gemini-3-pro-image (highest quality, up to 14 reference images), "
+            "gemini-2.5-flash-image (legacy, retires 2027-03-15)."
         ),
     )
     return_base64: bool = Field(False, description="Whether to return the base64-encoded image.")
@@ -279,13 +300,13 @@ class AnalyzeImageParams(BaseModel):
     prompt: str = Field(..., description="The question or instruction about the image.")
     image_path: str = Field(..., description="The path to the image to analyze.")
     model_name: str = Field(
-        "gemini-2.5-flash",
+        "gemini-3.8-flash",
         description=(
-            "Vision model to use. GA: gemini-2.5-flash (fast, default), "
-            "gemini-2.5-pro (highest reasoning), gemini-2.5-flash-lite (cheapest)."
+            "Vision model to use: gemini-3.8-flash (default), gemini-4-argon (highest reasoning), "
+            "gemini-3.5-flash, gemini-3.5-flash-lite / gemini-3.1-flash-lite (cheapest)."
         ),
     )
-    thinking_level: str = Field("HIGH", description="Thinking/reasoning level (MINIMAL, LOW, MEDIUM, HIGH).")
+    thinking_level: str = Field("HIGH", description="Thinking/reasoning level (MINIMAL, LOW, MEDIUM, HIGH). MINIMAL is sent as LOW for gemini-3.8-flash / gemini-4-argon, which reject it.")
     media_resolution: str = Field("MEDIUM", description="Media resolution for vision tasks (LOW, MEDIUM, HIGH, ULTRA_HIGH).")
 
 @mcp.tool()
@@ -306,17 +327,24 @@ class UpscaleImageParams(BaseModel):
     output_filename: Optional[str] = Field(None, description="The name of the file to save the upscaled image as.")
     output_path: Optional[str] = Field(None, description="Absolute path for the output file. Takes priority over output_filename.")
     model_name: str = Field(
-        "imagen-3.0-generate-002",
-        description="Model to use. GA: imagen-3.0-generate-002 (default). Other Imagen variants supported.",
+        "gemini-3.1-flash-image",
+        description=(
+            "Model to use: gemini-3.1-flash-image (default), gemini-nano-banana-2.1, gemini-3-pro-image (best detail). "
+            "gemini-3.1-flash-lite-image and gemini-2.5-flash-image cannot output above 1K."
+        ),
     )
+    model_tier: Optional[Literal["fast", "balanced", "quality", "ultra"]] = Field(None, description="Shorthand tier. Overrides model_name. fast/balanced → gemini-3.1-flash-image, quality → gemini-nano-banana-2.1, ultra → gemini-3-pro-image.")
+    target_resolution: Literal["2K", "4K"] = Field("2K", description="Output resolution (long edge ≈ 2048 or 4096 px). Aspect ratio is preserved (snapped to the nearest supported ratio).")
     return_base64: bool = Field(False, description="Whether to return the base64 encoded image.")
     save_format: Literal["png", "jpeg", "webp", "avif"] = Field("png", description="Output image format: png (default), jpeg, webp, or avif.")
 
 @mcp.tool()
 async def tool_upscale_image(params: UpscaleImageParams) -> dict:
     """
-    Upscale a low resolution image.
+    Upscale a low resolution image to 2K or 4K by re-rendering it with a Gemini image model.
     """
+    from model_registry import resolve_model
+
     if params.output_path:
         try:
             final_path = _validate_output_path(params.output_path)
@@ -327,12 +355,17 @@ async def tool_upscale_image(params: UpscaleImageParams) -> dict:
     else:
         return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
 
+    resolved_model = params.model_name
+    if params.model_tier:
+        resolved_model, _ = resolve_model(params.model_tier, "upscale")
+
     return await upscale_image(
         base_image_path=params.base_image_path,
         output_path=final_path,
-        model_name=params.model_name,
+        model_name=resolved_model,
         return_base64=params.return_base64,
         save_format=params.save_format,
+        target_resolution=params.target_resolution,
     )
 
 class RemoveBackgroundParams(BaseModel):
@@ -340,16 +373,22 @@ class RemoveBackgroundParams(BaseModel):
     output_filename: Optional[str] = Field(None, description="The name of the file to save the background-removed image as.")
     output_path: Optional[str] = Field(None, description="Absolute path for the output file. Takes priority over output_filename.")
     model_name: str = Field(
-        "imagen-3.0-capability-001",
-        description="Model to use. imagen-3.0-capability-001 (default, required for BGSWAP). Do not use imagen-3.0-generate-002 for background removal.",
+        "gemini-3.1-flash-image",
+        description="Model to use: gemini-3.1-flash-image (default), gemini-3.1-flash-lite-image, gemini-nano-banana-2.1, gemini-3-pro-image.",
     )
+    model_tier: Optional[Literal["fast", "balanced", "quality", "ultra"]] = Field(None, description="Shorthand tier. Overrides model_name. Same mapping as tool_edit_image.")
+    key_color: Literal["green", "blue", "magenta"] = Field("green", description="Chroma-key colour the model paints the background with before it is made transparent. Choose one that does not appear in the subject (e.g. 'magenta' for green subjects).")
+    subject: Optional[str] = Field(None, description="What to keep, e.g. 'the red mug' or 'the person on the left'. Default: the single most prominent foreground object.")
     return_base64: bool = Field(False, description="Whether to return the base64 encoded image.")
 
 @mcp.tool()
 async def tool_remove_background(params: RemoveBackgroundParams) -> dict:
     """
-    Remove background from an image.
+    Remove the background from an image and save a transparent PNG.
+    The Gemini model places the subject on a flat chroma-key colour, which is then keyed out locally.
     """
+    from model_registry import resolve_model
+
     if params.output_path:
         try:
             final_path = _validate_output_path(params.output_path)
@@ -360,11 +399,17 @@ async def tool_remove_background(params: RemoveBackgroundParams) -> dict:
     else:
         return {"success": False, "error": {"code": "VALIDATION", "message": "Provide output_filename or output_path."}}
 
+    resolved_model = params.model_name
+    if params.model_tier:
+        resolved_model, _ = resolve_model(params.model_tier, "edit")
+
     return await remove_background(
         base_image_path=params.base_image_path,
         output_path=final_path,
-        model_name=params.model_name,
-        return_base64=params.return_base64
+        model_name=resolved_model,
+        return_base64=params.return_base64,
+        key_color=params.key_color,
+        subject=params.subject,
     )
 
 class GenerateVideoParams(BaseModel):
@@ -545,8 +590,8 @@ class BatchGenerateParams(BaseModel):
     prompts: List[str] = Field(..., description="List of text prompts (max 10).")
     output_prefix: str = Field(..., description="Filename prefix. Files: <prefix>_0.png, <prefix>_1.png, ...")
     output_dir: Optional[str] = Field(None, description="Absolute directory path for output. Defaults to DEFAULT_OUTPUT_DIR.")
-    model_name: str = Field("imagen-4.0-fast-generate-001", description="Imagen model to use for all prompts.")
-    model_tier: Optional[Literal["fast", "quality", "ultra"]] = Field(None, description="fast / quality / ultra. Overrides model_name. ('balanced' is not supported for batch — it routes to Gemini which is Imagen-incompatible.)")
+    model_name: str = Field("gemini-3.1-flash-lite-image", description="Image model to use for all prompts (Gemini image model or legacy Imagen ID).")
+    model_tier: Optional[Literal["fast", "balanced", "quality", "ultra"]] = Field(None, description="fast / balanced / quality / ultra. Overrides model_name (same mapping as tool_generate_image).")
     aspect_ratio: str = Field("1:1", description="Aspect ratio for all generated images.")
 
 @mcp.tool()
@@ -602,7 +647,7 @@ class GenerateMusicParams(BaseModel):
     prompt: str = Field(..., description="Text description of the music to generate.")
     output_filename: Optional[str] = Field(None, description="Output filename (e.g. track.mp3). Required if output_path not given.")
     output_path: Optional[str] = Field(None, description="Absolute output file path.")
-    model_name: Literal["lyria-2", "lyria-3-pro", "lyria-3-clip"] = Field("lyria-2", description="Lyria model version. lyria-3-pro: highest quality; lyria-3-clip: short clips.")
+    model_name: Literal["lyria-3.5", "lyria-3-pro", "lyria-3-clip", "lyria-2"] = Field("lyria-2", description="Lyria model version. lyria-3.5: flagship full-length songs (Gemini API key required); lyria-3-pro: previous-gen full-length; lyria-3-clip: clips up to 30s; lyria-2: legacy alias of lyria-3-clip.")
     duration: Optional[int] = Field(None, description="Desired music duration in seconds (optional).")
 
 @mcp.tool()
@@ -630,7 +675,7 @@ async def tool_generate_music(params: GenerateMusicParams) -> dict:
 
 class EmbedParams(BaseModel):
     text: str = Field(..., description="Text to embed into a float vector.")
-    model: Optional[str] = Field(None, description="Override embedding model. Defaults to text-embedding-004 (Vertex AI) or gemini-embedding-2 (Gemini API).")
+    model: Optional[str] = Field(None, description="Override embedding model. Defaults to gemini-embedding-001 (Vertex AI) or gemini-embedding-2 (Gemini API).")
 
 @mcp.tool()
 async def tool_embed(params: EmbedParams) -> dict:
@@ -642,7 +687,7 @@ async def tool_embed(params: EmbedParams) -> dict:
 class AnalyzeVideoParams(BaseModel):
     video_path: str = Field(..., description="Absolute path to the local video file (max 20MB). Supported: mp4, mov, avi, webm, mkv.")
     prompt: str = Field(..., description="The question or analysis instruction about the video.")
-    model_tier: Literal["fast", "balanced", "quality"] = Field("fast", description="fast → gemini-3.1-flash-lite, balanced → gemini-3.5-flash, quality → gemini-2.5-pro.")
+    model_tier: Literal["fast", "balanced", "quality"] = Field("fast", description="fast → gemini-3.5-flash-lite, balanced → gemini-3.8-flash, quality → gemini-4-argon.")
     model: Optional[str] = Field(None, description="Override the model name directly.")
 
 @mcp.tool()
@@ -659,10 +704,10 @@ async def tool_analyze_video(params: AnalyzeVideoParams) -> dict:
 
 class GenerateSpeechParams(BaseModel):
     text: str = Field(..., description="Text to convert to speech.")
-    voice: Literal["Aoede", "Charon", "Fenrir", "Kore", "Puck"] = Field("Kore", description="Voice to use for speech synthesis.")
+    voice: str = Field("Kore", description="Prebuilt Gemini TTS voice (30 available), e.g. Kore (firm), Puck (upbeat), Zephyr (bright), Charon (informative), Aoede (breezy), Sulafat (warm).")
     output_filename: Optional[str] = Field(None, description="Output filename (e.g. speech.wav). Saved to DEFAULT_OUTPUT_DIR.")
     output_path: Optional[str] = Field(None, description="Absolute output file path. Takes priority over output_filename.")
-    model_tier: Literal["fast", "quality"] = Field("fast", description="fast → gemini-2.5-flash-preview-tts, quality → gemini-2.5-pro-preview-tts.")
+    model_tier: Literal["fast", "quality"] = Field("fast", description="fast → gemini-3.8-flash-lite-tts, quality → gemini-3.8-flash-tts.")
     model: Optional[str] = Field(None, description="Override the model name directly.")
 
 @mcp.tool()
@@ -683,8 +728,8 @@ async def tool_generate_speech(params: GenerateSpeechParams) -> dict:
 
 class LiveGenerateParams(BaseModel):
     prompt: str = Field(..., description="The text prompt to send to Gemini streaming.")
-    model_tier: Literal["fast", "balanced", "quality"] = Field("fast", description="fast → gemini-3.1-flash-lite, balanced → gemini-3.5-flash, quality → gemini-2.5-pro.")
-    model: Optional[str] = Field(None, description="Override the model name directly.")
+    model_tier: Literal["fast", "balanced", "quality"] = Field("fast", description="fast → gemini-3.5-flash-lite, balanced → gemini-3.8-flash, quality → gemini-4-argon.")
+    model: Optional[str] = Field(None, description="Override the model name directly (must support generateContent; Live API-only models such as gemini-3.8-live are not supported).")
 
 @mcp.tool()
 async def tool_live_generate(params: LiveGenerateParams) -> dict:
@@ -747,7 +792,7 @@ def UI_UX_mockup(app_purpose: str, color_palette: str) -> str:
 def main():
     logger.info(f"Starting OpenGoogleImageGeneratorMCP v{__version__}...")
     check_for_updates()
-    mcp.run()
+    mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
